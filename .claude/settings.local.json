@@ -6,7 +6,8 @@
       "Bash(python -c:*)",
       "Bash(PYTHONPATH=src pytest:*)",
       "Bash(docker info:*)",
-      "Bash(PYTHONPATH=src python:*)"
+      "Bash(PYTHONPATH=src python:*)",
+      "Bash(source:*)"
     ]
   }
 }
