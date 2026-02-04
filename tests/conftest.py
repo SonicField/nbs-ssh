@@ -2,9 +2,10 @@
 Pytest fixtures for nbs-ssh integration tests.
 
 Provides:
-- SSH server fixture (Docker-based)
+- SSH server fixture (MockSSHServer-based, no Docker required)
 - Event capture fixture for asserting event sequences
 - Known hosts fixture for test environment
+- Legacy Docker-based SSH server fixture (optional)
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import pytest
 
 if TYPE_CHECKING:
     from nbs_ssh.events import Event, EventCollector
+    from nbs_ssh.testing.mock_server import MockSSHServer
 
 
 # Path to docker directory relative to this file
@@ -35,8 +37,8 @@ class SSHServerInfo:
     port: int
     username: str
     password: str
-    key_path: Path
-    known_hosts_path: Path
+    key_path: Path | None
+    known_hosts_path: Path | None
 
 
 def is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -73,8 +75,76 @@ def docker_available() -> bool:
         return False
 
 
+@pytest.fixture
+async def mock_ssh_server() -> AsyncGenerator["MockSSHServer", None]:
+    """
+    Fixture providing a MockSSHServer for integration tests.
+
+    This is the preferred fixture for most tests - no Docker required.
+
+    Usage:
+        @pytest.mark.asyncio
+        async def test_example(mock_ssh_server):
+            async with SSHConnection(
+                host="localhost",
+                port=mock_ssh_server.port,
+                username="test",
+                password="test",
+                known_hosts=None,
+            ) as conn:
+                result = await conn.exec("echo hello")
+    """
+    from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+    config = MockServerConfig(
+        username="test",
+        password="test",
+    )
+
+    async with MockSSHServer(config) as server:
+        yield server
+
+
+@pytest.fixture
+async def streaming_ssh_server() -> AsyncGenerator["MockSSHServer", None]:
+    """
+    Fixture providing a MockSSHServer with real command execution.
+
+    Use this for streaming tests that need actual shell commands
+    (echo, sleep, etc.) with real incremental output.
+    """
+    from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+    config = MockServerConfig(
+        username="test",
+        password="test",
+        execute_commands=True,  # Actually run shell commands
+    )
+
+    async with MockSSHServer(config) as server:
+        yield server
+
+
+@pytest.fixture
+def ssh_server(mock_ssh_server: "MockSSHServer") -> SSHServerInfo:
+    """
+    Fixture providing SSHServerInfo for integration tests.
+
+    Now uses MockSSHServer by default, eliminating Docker dependency.
+    For tests that specifically need Docker, use docker_ssh_server instead.
+    """
+    return SSHServerInfo(
+        host="localhost",
+        port=mock_ssh_server.port,
+        username="test",
+        password="test",
+        key_path=None,  # Mock server doesn't support key auth yet
+        known_hosts_path=None,  # Use known_hosts=None in SSHConnection
+    )
+
+
 @pytest.fixture(scope="session")
-def ssh_server(docker_available: bool) -> Generator[SSHServerInfo | None, None, None]:
+def docker_ssh_server(docker_available: bool) -> Generator[SSHServerInfo | None, None, None]:
     """
     Start the Docker SSH test server for the session.
 

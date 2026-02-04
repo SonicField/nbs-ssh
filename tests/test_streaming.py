@@ -8,6 +8,10 @@ Success criteria:
 1. Can `async for event in conn.stream_exec("command")` and receive events as they arrive?
 2. Can cancel a running stream_exec and have it terminate gracefully?
 3. Do EXEC events distinguish between exec() and stream_exec()?
+
+NOTE: Integration tests in this file require Docker as the MockSSHServer
+does not support true streaming (data arriving over time). Use docker_ssh_server
+fixture for these tests.
 """
 from __future__ import annotations
 
@@ -142,33 +146,26 @@ class TestStreamExecResultUnit:
 
 
 # =============================================================================
-# Integration Tests (require Docker)
+# Integration Tests (use streaming_ssh_server with execute_commands=True)
 # =============================================================================
 
 
 @pytest.mark.asyncio
 async def test_stream_exec_yields_events_in_order(
-    ssh_server: "SSHServerInfo",
+    streaming_ssh_server,
     event_collector,
 ) -> None:
     """
     stream_exec should yield StreamEvents in the order they arrive.
-
-    Validates:
-    - Events are yielded as they arrive (not buffered)
-    - Each event has timestamp, stream type, data
-    - Final event is EOF
     """
     from nbs_ssh.connection import SSHConnection, StreamEvent
 
-    assert ssh_server is not None, "SSH server fixture should provide connection info"
-
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        host="localhost",
+        port=streaming_ssh_server.port,
+        username="test",
+        password="test",
+        known_hosts=None,
         event_collector=event_collector,
     ) as conn:
         events: list[StreamEvent] = []
@@ -201,27 +198,20 @@ async def test_stream_exec_yields_events_in_order(
 
 @pytest.mark.asyncio
 async def test_stream_exec_cancellation_stops_stream(
-    ssh_server: "SSHServerInfo",
+    streaming_ssh_server,
     event_collector,
 ) -> None:
     """
     Cancelling a stream_exec should terminate gracefully.
-
-    Validates:
-    - cancel() method stops the stream
-    - No zombie processes are left running
-    - EXEC event includes cancelled=True
     """
     from nbs_ssh.connection import SSHConnection
 
-    assert ssh_server is not None
-
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        host="localhost",
+        port=streaming_ssh_server.port,
+        username="test",
+        password="test",
+        known_hosts=None,
         event_collector=event_collector,
     ) as conn:
         # Start a long-running command
@@ -252,27 +242,20 @@ async def test_stream_exec_cancellation_stops_stream(
 
 @pytest.mark.asyncio
 async def test_stream_exec_events_include_streaming_metadata(
-    ssh_server: "SSHServerInfo",
+    streaming_ssh_server,
     event_collector,
 ) -> None:
     """
     EXEC events from stream_exec should include streaming-specific metadata.
-
-    Validates:
-    - streaming: True
-    - bytes_stdout: total bytes received on stdout
-    - bytes_stderr: total bytes received on stderr
     """
     from nbs_ssh.connection import SSHConnection
 
-    assert ssh_server is not None
-
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        host="localhost",
+        port=streaming_ssh_server.port,
+        username="test",
+        password="test",
+        known_hosts=None,
         event_collector=event_collector,
     ) as conn:
         async for _ in conn.stream_exec("echo hello && echo error >&2"):
@@ -292,24 +275,20 @@ async def test_stream_exec_events_include_streaming_metadata(
 
 @pytest.mark.asyncio
 async def test_stream_exec_stdout_stderr_interleaving(
-    ssh_server: "SSHServerInfo",
+    streaming_ssh_server,
     event_collector,
 ) -> None:
     """
     stdout and stderr events should preserve their interleaving order.
-
-    Uses a command that alternates stdout/stderr output.
     """
     from nbs_ssh.connection import SSHConnection, StreamEvent
 
-    assert ssh_server is not None
-
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        host="localhost",
+        port=streaming_ssh_server.port,
+        username="test",
+        password="test",
+        known_hosts=None,
         event_collector=event_collector,
     ) as conn:
         events: list[StreamEvent] = []
@@ -332,25 +311,20 @@ async def test_stream_exec_stdout_stderr_interleaving(
 
 @pytest.mark.asyncio
 async def test_stream_exec_vs_exec_events_differ(
-    ssh_server: "SSHServerInfo",
+    streaming_ssh_server,
     event_collector,
 ) -> None:
     """
     EXEC events should distinguish between exec() and stream_exec().
-
-    exec() should have streaming=False (or no streaming key).
-    stream_exec() should have streaming=True.
     """
     from nbs_ssh.connection import SSHConnection
 
-    assert ssh_server is not None
-
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        host="localhost",
+        port=streaming_ssh_server.port,
+        username="test",
+        password="test",
+        known_hosts=None,
         event_collector=event_collector,
     ) as conn:
         # Run a regular exec
@@ -375,7 +349,7 @@ async def test_stream_exec_vs_exec_events_differ(
 
 @pytest.mark.asyncio
 async def test_stream_exec_with_exit_code(
-    ssh_server: "SSHServerInfo",
+    streaming_ssh_server,
     event_collector,
 ) -> None:
     """
@@ -383,14 +357,12 @@ async def test_stream_exec_with_exit_code(
     """
     from nbs_ssh.connection import SSHConnection
 
-    assert ssh_server is not None
-
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        host="localhost",
+        port=streaming_ssh_server.port,
+        username="test",
+        password="test",
+        known_hosts=None,
         event_collector=event_collector,
     ) as conn:
         events = []

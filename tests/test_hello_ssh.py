@@ -3,9 +3,9 @@ Hello SSH integration test.
 
 Tests basic SSH connection, command execution, and JSONL event logging.
 This is the first integration test for nbs-ssh, validating:
-- Docker SSH server connectivity
+- MockSSHServer connectivity
 - Basic command execution (echo hello)
-- Event sequence: CONNECT → AUTH → EXEC → DISCONNECT
+- Event sequence: CONNECT -> AUTH -> EXEC -> DISCONNECT
 - JSONL event serialisation with timestamps
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 @pytest.mark.asyncio
 async def test_connect_and_echo(
-    ssh_server: SSHServerInfo,
+    ssh_server: "SSHServerInfo",
     event_collector,
     temp_jsonl_path: Path,
 ) -> None:
@@ -31,7 +31,7 @@ async def test_connect_and_echo(
 
     Success criteria:
     1. Command output is 'hello'
-    2. Events contain CONNECT → AUTH → EXEC → DISCONNECT sequence
+    2. Events contain CONNECT -> AUTH -> EXEC -> DISCONNECT sequence
     3. All events have timestamps
     """
     from nbs_ssh.connection import SSHConnection
@@ -44,7 +44,7 @@ async def test_connect_and_echo(
         port=ssh_server.port,
         username=ssh_server.username,
         password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        known_hosts=ssh_server.known_hosts_path,  # May be None for mock server
         event_collector=event_collector,
         event_log_path=temp_jsonl_path,
     ) as conn:
@@ -95,95 +95,118 @@ async def test_connect_and_echo(
 
 @pytest.mark.asyncio
 async def test_connect_with_key(
-    ssh_server: SSHServerInfo,
+    docker_ssh_server,
     event_collector,
 ) -> None:
     """
     Connect using SSH key authentication.
 
     Validates key-based auth works alongside password auth.
+
+    NOTE: This test requires Docker as MockSSHServer doesn't support key auth yet.
     """
     from nbs_ssh.connection import SSHConnection
 
-    assert ssh_server is not None, "SSH server fixture should provide connection info"
+    if docker_ssh_server is None:
+        pytest.skip("Docker SSH server required for key-based auth test")
 
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        client_keys=[ssh_server.key_path],
-        known_hosts=ssh_server.known_hosts_path,
+        host=docker_ssh_server.host,
+        port=docker_ssh_server.port,
+        username=docker_ssh_server.username,
+        client_keys=[docker_ssh_server.key_path],
+        known_hosts=docker_ssh_server.known_hosts_path,
         event_collector=event_collector,
     ) as conn:
         result = await conn.exec("whoami")
 
         assert result.exit_code == 0, f"Command failed: {result.stderr}"
-        assert result.stdout.strip() == ssh_server.username
+        assert result.stdout.strip() == docker_ssh_server.username
 
 
 @pytest.mark.asyncio
 async def test_exec_failure_event(
-    ssh_server: SSHServerInfo,
+    ssh_server: "SSHServerInfo",
     event_collector,
 ) -> None:
     """
-    Verify ERROR event is emitted when command fails.
+    Verify EXEC event captures command exit code.
+
+    Note: With MockSSHServer, we configure specific exit codes.
     """
     from nbs_ssh.connection import SSHConnection
+    from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
 
-    assert ssh_server is not None
+    # Use a mock server with custom exit code
+    config = MockServerConfig(
+        username="test",
+        password="test",
+        command_exit_codes={"exit 42": 42},
+    )
 
-    async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
-        event_collector=event_collector,
-    ) as conn:
-        result = await conn.exec("exit 42")
+    async with MockSSHServer(config) as server:
+        async with SSHConnection(
+            host="localhost",
+            port=server.port,
+            username="test",
+            password="test",
+            known_hosts=None,
+            event_collector=event_collector,
+        ) as conn:
+            result = await conn.exec("exit 42")
 
-        # Command should complete but with non-zero exit code
-        assert result.exit_code == 42
+            # Command should complete with configured exit code
+            assert result.exit_code == 42
 
-    # Verify EXEC event captured the failure
-    exec_events = [e for e in event_collector.events if e.event_type == "EXEC"]
-    assert len(exec_events) == 1
-    assert exec_events[0].data.get("exit_code") == 42
+        # Verify EXEC event captured the exit code
+        exec_events = [e for e in event_collector.events if e.event_type == "EXEC"]
+        assert len(exec_events) == 1
+        assert exec_events[0].data.get("exit_code") == 42
 
 
 @pytest.mark.asyncio
 async def test_event_context_timing(
-    ssh_server: SSHServerInfo,
+    ssh_server: "SSHServerInfo",
     event_collector,
 ) -> None:
     """
     Verify event timing is captured correctly.
+
+    Note: MockSSHServer returns instantly, so we use slow_output to create delay.
     """
     from nbs_ssh.connection import SSHConnection
+    from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
 
-    assert ssh_server is not None
+    # Use a mock server with slow output
+    config = MockServerConfig(
+        username="test",
+        password="test",
+        slow_output_bytes_per_sec=50,
+        command_outputs={"slow_cmd": ("x" * 20 + "\n", "")},
+    )
 
-    async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
-        event_collector=event_collector,
-    ) as conn:
-        # Run a command that takes measurable time
-        result = await conn.exec("sleep 0.1 && echo done")
-        assert result.exit_code == 0
+    async with MockSSHServer(config) as server:
+        async with SSHConnection(
+            host="localhost",
+            port=server.port,
+            username="test",
+            password="test",
+            known_hosts=None,
+            event_collector=event_collector,
+        ) as conn:
+            # Run a command with slow output
+            result = await conn.exec("slow_cmd")
+            assert result.exit_code == 0
 
-    # Find EXEC event and verify duration
-    exec_events = [e for e in event_collector.events if e.event_type == "EXEC"]
-    assert len(exec_events) == 1
+        # Find EXEC event and verify duration
+        exec_events = [e for e in event_collector.events if e.event_type == "EXEC"]
+        assert len(exec_events) == 1
 
-    exec_event = exec_events[0]
-    duration = exec_event.data.get("duration_ms")
-    assert duration is not None, "EXEC event should have duration_ms"
-    assert duration >= 100, f"Duration should be >= 100ms, got {duration}ms"
+        exec_event = exec_events[0]
+        duration = exec_event.data.get("duration_ms")
+        assert duration is not None, "EXEC event should have duration_ms"
+        # Slow output takes ~0.4s for 20 bytes at 50 bytes/sec
+        assert duration >= 100, f"Duration should be >= 100ms, got {duration}ms"
 
 
 @pytest.mark.asyncio
@@ -191,9 +214,10 @@ async def test_connection_refused_error(event_collector) -> None:
     """
     Verify ERROR event when connection is refused.
     """
-    from nbs_ssh.connection import SSHConnection, SSHConnectionError
+    from nbs_ssh.connection import SSHConnection
+    from nbs_ssh.errors import SSHConnectionError
 
-    with pytest.raises(SSHConnectionError) as exc_info:
+    with pytest.raises(SSHConnectionError):
         async with SSHConnection(
             host="localhost",
             port=29999,  # Unlikely to be in use
@@ -208,3 +232,24 @@ async def test_connection_refused_error(event_collector) -> None:
     # Verify error event
     error_events = [e for e in event_collector.events if e.event_type == "ERROR"]
     assert len(error_events) >= 1, "Should have ERROR event for connection failure"
+
+
+@pytest.mark.asyncio
+async def test_whoami_command(ssh_server: "SSHServerInfo", event_collector) -> None:
+    """
+    Verify whoami command returns the expected username.
+    """
+    from nbs_ssh.connection import SSHConnection
+
+    async with SSHConnection(
+        host=ssh_server.host,
+        port=ssh_server.port,
+        username=ssh_server.username,
+        password=ssh_server.password,
+        known_hosts=ssh_server.known_hosts_path,
+        event_collector=event_collector,
+    ) as conn:
+        result = await conn.exec("whoami")
+
+        assert result.exit_code == 0
+        assert result.stdout.strip() == ssh_server.username

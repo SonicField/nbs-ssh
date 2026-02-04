@@ -30,3 +30,10 @@ Decision: Installed via pty-session with proxy: asyncssh-2.22.0, pytest-9.0.2, p
 Implication: All core dependencies available. pty-session bypasses Claude agent proxy restrictions.
 ---
 
+---
+[2026-02-04] REPLACE DOCKER WITH MOCK SSH SERVER
+Context: Docker-based testing only proves client works with one SSH implementation. Cannot test edge cases, security attacks, or run on Windows without Docker.
+Decision: Build pure-Python mock SSH server using AsyncSSH server capabilities. Bind port 0, expose assigned port. Server actively attempts attacks (weak ciphers, malformed data, connection drops) to falsify client security claims.
+Implication: Tests become truly falsifiable - "we tried to break it and couldn't" rather than "it works with OpenSSH in Docker". Cross-platform. No external dependencies. Parallel test execution.
+---
+

@@ -721,22 +721,25 @@ async def test_automation_transcript_jsonl_valid(
 
 @pytest.mark.asyncio
 async def test_automation_regex_capture_groups(
-    ssh_server: "SSHServerInfo",
+    docker_ssh_server,
     event_collector,
 ) -> None:
     """
     AutomationEngine captures regex groups from real output.
+
+    NOTE: Requires Docker as MockSSHServer doesn't support true streaming.
     """
     from nbs_ssh import AutomationEngine, ExpectPattern, PatternType, SSHConnection
 
-    assert ssh_server is not None
+    if docker_ssh_server is None:
+        pytest.skip("Docker SSH server required for automation tests")
 
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        host=docker_ssh_server.host,
+        port=docker_ssh_server.port,
+        username=docker_ssh_server.username,
+        password=docker_ssh_server.password,
+        known_hosts=docker_ssh_server.known_hosts_path,
         event_collector=event_collector,
     ) as conn:
         # Echo a pattern we can capture
@@ -755,22 +758,25 @@ async def test_automation_regex_capture_groups(
 
 @pytest.mark.asyncio
 async def test_automation_timeout_behaviour(
-    ssh_server: "SSHServerInfo",
+    docker_ssh_server,
     event_collector,
 ) -> None:
     """
     AutomationEngine times out correctly on missing pattern.
+
+    NOTE: Requires Docker as MockSSHServer doesn't support true streaming.
     """
     from nbs_ssh import AutomationEngine, ExpectTimeoutError, SSHConnection
 
-    assert ssh_server is not None
+    if docker_ssh_server is None:
+        pytest.skip("Docker SSH server required for automation tests")
 
     async with SSHConnection(
-        host=ssh_server.host,
-        port=ssh_server.port,
-        username=ssh_server.username,
-        password=ssh_server.password,
-        known_hosts=ssh_server.known_hosts_path,
+        host=docker_ssh_server.host,
+        port=docker_ssh_server.port,
+        username=docker_ssh_server.username,
+        password=docker_ssh_server.password,
+        known_hosts=docker_ssh_server.known_hosts_path,
         event_collector=event_collector,
     ) as conn:
         stream = conn.stream_exec("echo 'quick output'")
