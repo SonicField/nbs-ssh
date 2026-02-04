@@ -40,8 +40,28 @@ from nbs_ssh.errors import (
     SSHError,
 )
 from nbs_ssh.events import Event, EventCollector, EventEmitter, EventType
+from nbs_ssh.evidence import (
+    AlgorithmInfo,
+    EvidenceBundle,
+    HostInfo,
+    TimingInfo,
+    redact_secrets,
+    redact_string,
+)
 from nbs_ssh.forwarding import ForwardHandle, ForwardIntent, ForwardManager, ForwardType
 from nbs_ssh.keepalive import KeepaliveConfig, ProgressWatchdog
+from nbs_ssh.platform import (
+    discover_keys,
+    expand_path,
+    get_agent_available,
+    get_default_key_paths,
+    get_known_hosts_path,
+    get_openssh_agent_available,
+    get_pageant_available,
+    get_ssh_dir,
+    is_windows,
+    validate_path,
+)
 from nbs_ssh.supervisor import ConnectionState, RetryPolicy, SSHSupervisor
 
 __all__ = [
@@ -100,4 +120,22 @@ __all__ = [
     "EventCollector",
     "EventEmitter",
     "EventType",
+    # Evidence
+    "EvidenceBundle",
+    "AlgorithmInfo",
+    "HostInfo",
+    "TimingInfo",
+    "redact_secrets",
+    "redact_string",
+    # Platform
+    "is_windows",
+    "get_ssh_dir",
+    "get_known_hosts_path",
+    "get_default_key_paths",
+    "expand_path",
+    "validate_path",
+    "discover_keys",
+    "get_pageant_available",
+    "get_openssh_agent_available",
+    "get_agent_available",
 ]

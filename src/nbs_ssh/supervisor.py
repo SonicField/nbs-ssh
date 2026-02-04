@@ -390,6 +390,47 @@ class SSHSupervisor:
                     return await self._connection.exec(command)
             raise
 
+    def get_evidence_bundle(
+        self,
+        transcript: "Transcript | None" = None,
+    ) -> "EvidenceBundle":
+        """
+        Create an evidence bundle with all diagnostic information.
+
+        Delegates to the underlying SSHConnection if available,
+        otherwise creates a minimal bundle with supervisor state.
+
+        Args:
+            transcript: Optional automation transcript to include
+
+        Returns:
+            EvidenceBundle with all diagnostic data
+        """
+        from nbs_ssh.evidence import EvidenceBundle, HostInfo, TimingInfo
+
+        if self._connection is not None:
+            bundle = self._connection.get_evidence_bundle(transcript)
+            # Add supervisor-specific info to error context
+            bundle.error_context["supervisor_state"] = self._state.value
+            bundle.error_context["reconnection_count"] = self._reconnection_count
+            return bundle
+
+        # No connection - return minimal bundle
+        return EvidenceBundle(
+            events=list(self._event_collector.events) if self._event_collector else [],
+            transcript=transcript,
+            host_info=HostInfo(
+                host=self._host,
+                port=self._port,
+                username=self._username,
+            ),
+            timing=TimingInfo(),
+            error_context={
+                "supervisor_state": self._state.value,
+                "reconnection_count": self._reconnection_count,
+            },
+        )
+
     async def _connect(self) -> None:
         """Establish initial connection."""
         await self._transition_to(ConnectionState.CONNECTING)

@@ -43,6 +43,7 @@ from nbs_ssh.errors import (
     SSHError,
 )
 from nbs_ssh.events import EventCollector, EventEmitter, EventType
+from nbs_ssh.evidence import AlgorithmInfo, EvidenceBundle, HostInfo, TimingInfo
 from nbs_ssh.keepalive import KeepaliveConfig
 
 
@@ -307,6 +308,10 @@ class SSHConnection:
 
         self._conn: asyncssh.SSHClientConnection | None = None
 
+        # Timing tracking for evidence bundles
+        self._timing = TimingInfo()
+        self._last_error_context: ErrorContext | None = None
+
     def _build_auth_configs(
         self,
         auth: AuthConfig | Sequence[AuthConfig] | None,
@@ -348,6 +353,9 @@ class SSHConnection:
             "username": self._username,
         }
 
+        # Track connection timing
+        self._timing.connect_start_ms = time.time() * 1000
+
         self._emitter.emit(EventType.CONNECT, status="initiating", **connect_data)
 
         # Build error context for exception handling
@@ -361,6 +369,9 @@ class SSHConnection:
         last_error: Exception | None = None
         successful_method: str | None = None
 
+        # Track auth timing
+        self._timing.auth_start_ms = time.time() * 1000
+
         for auth_config in self._auth_configs:
             auth_start_ms = time.time() * 1000
 
@@ -368,6 +379,10 @@ class SSHConnection:
                 await self._try_auth_method(auth_config)
                 successful_method = auth_config.method.value
                 auth_duration_ms = (time.time() * 1000) - auth_start_ms
+
+                # Track timing
+                self._timing.auth_end_ms = time.time() * 1000
+                self._timing.connect_end_ms = time.time() * 1000
 
                 self._emitter.emit(
                     EventType.AUTH,
@@ -409,6 +424,7 @@ class SSHConnection:
         if self._conn is None:
             # All auth methods failed
             error_ctx.auth_method = ",".join(c.method.value for c in self._auth_configs)
+            self._last_error_context = error_ctx
 
             self._emitter.emit(
                 EventType.ERROR,
@@ -513,6 +529,9 @@ class SSHConnection:
         if reason is not None:
             self._disconnect_reason = reason
 
+        # Track disconnect timing
+        self._timing.disconnect_ms = time.time() * 1000
+
         if self._conn:
             self._emitter.emit(
                 EventType.DISCONNECT,
@@ -590,6 +609,55 @@ class SSHConnection:
         # Return the async iterator wrapper
         # Note: process is a coroutine, we need to handle it in the iterator
         return _StreamExecResultFactory(process, self._emitter, command)
+
+    def get_evidence_bundle(
+        self,
+        transcript: "Transcript | None" = None,
+    ) -> EvidenceBundle:
+        """
+        Create an evidence bundle with all diagnostic information.
+
+        Captures events, timing, algorithms, and error context for
+        debugging connection issues. Secrets are redacted by default
+        when exporting.
+
+        Args:
+            transcript: Optional automation transcript to include
+
+        Returns:
+            EvidenceBundle with all diagnostic data
+        """
+        from nbs_ssh.automation import Transcript
+
+        # Get events from collector if available
+        events: list = []
+        if self._emitter._collector:
+            events = list(self._emitter._collector.events)
+
+        # Extract algorithm info from AsyncSSH connection
+        algorithms = AlgorithmInfo.from_asyncssh_conn(self._conn)
+
+        # Build host info
+        host_info = HostInfo(
+            host=self._host,
+            port=self._port,
+            username=self._username,
+        )
+
+        # Build error context dict
+        error_context: dict = {}
+        if self._last_error_context:
+            error_context = self._last_error_context.to_dict()
+
+        return EvidenceBundle(
+            events=events,
+            transcript=transcript,
+            algorithms=algorithms,
+            disconnect_reason=self._disconnect_reason,
+            timing=self._timing,
+            host_info=host_info,
+            error_context=error_context,
+        )
 
 
 class _StreamExecResultFactory:

@@ -17,6 +17,7 @@ from typing import Any, Sequence
 import asyncssh
 
 from nbs_ssh.errors import AgentError, ErrorContext, KeyLoadError
+from nbs_ssh.platform import expand_path, get_agent_available, get_openssh_agent_available
 
 
 class AuthMethod(str, Enum):
@@ -71,9 +72,9 @@ class AuthConfig:
             assert self.key_path is not None, \
                 "key_path required for PRIVATE_KEY auth method"
 
-        # Normalise key_path to Path
+        # Normalise key_path to Path using platform-aware expansion
         if self.key_path is not None:
-            self.key_path = Path(self.key_path).expanduser()
+            self.key_path = expand_path(self.key_path)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for logging (excludes secrets)."""
@@ -100,7 +101,7 @@ def load_private_key(
     Raises:
         KeyLoadError: If key cannot be loaded (file not found, bad format, wrong passphrase)
     """
-    key_path = Path(key_path).expanduser()
+    key_path = expand_path(key_path)
 
     # Check file exists
     if not key_path.exists():
@@ -146,15 +147,13 @@ def check_agent_available() -> bool:
     """
     Check if SSH agent is available.
 
-    Returns:
-        True if SSH_AUTH_SOCK is set and socket exists
-    """
-    auth_sock = os.environ.get("SSH_AUTH_SOCK")
-    if not auth_sock:
-        return False
+    On Unix: checks SSH_AUTH_SOCK environment variable
+    On Windows: checks for Pageant and OpenSSH Authentication Agent service
 
-    sock_path = Path(auth_sock)
-    return sock_path.exists()
+    Returns:
+        True if any SSH agent is available
+    """
+    return get_agent_available()
 
 
 async def get_agent_keys() -> list[asyncssh.SSHKey]:
