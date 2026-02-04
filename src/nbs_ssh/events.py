@@ -33,6 +33,12 @@ class EventType(str, Enum):
     EXEC = "EXEC"
     DISCONNECT = "DISCONNECT"
     ERROR = "ERROR"
+    # Keepalive events
+    KEEPALIVE_SENT = "KEEPALIVE_SENT"
+    KEEPALIVE_RECEIVED = "KEEPALIVE_RECEIVED"
+    KEEPALIVE_TIMEOUT = "KEEPALIVE_TIMEOUT"
+    # Progress watchdog events
+    PROGRESS_WARNING = "PROGRESS_WARNING"
 
 
 @dataclass

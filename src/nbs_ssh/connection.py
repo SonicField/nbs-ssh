@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, AsyncIterator, Sequence
 
 import asyncssh
 
@@ -33,6 +33,7 @@ from nbs_ssh.errors import (
     AuthFailed,
     ConnectionRefused,
     ConnectionTimeout,
+    DisconnectReason,
     ErrorContext,
     HostKeyMismatch,
     HostUnreachable,
@@ -42,6 +43,7 @@ from nbs_ssh.errors import (
     SSHError,
 )
 from nbs_ssh.events import EventCollector, EventEmitter, EventType
+from nbs_ssh.keepalive import KeepaliveConfig
 
 
 # Re-export for backwards compatibility
@@ -54,6 +56,178 @@ class ExecResult:
     stdout: str
     stderr: str
     exit_code: int
+
+
+@dataclass
+class StreamEvent:
+    """
+    A single event from a streaming command execution.
+
+    Attributes:
+        timestamp: Unix timestamp in milliseconds when event was received
+        stream: Source of the data - 'stdout', 'stderr', or 'exit'
+        data: The data received (empty string for exit events)
+        exit_code: Exit code (only set for stream='exit')
+    """
+    timestamp: float
+    stream: str  # 'stdout', 'stderr', or 'exit'
+    data: str = ""
+    exit_code: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate event fields."""
+        assert self.stream in ("stdout", "stderr", "exit"), \
+            f"stream must be 'stdout', 'stderr', or 'exit', got '{self.stream}'"
+        assert self.timestamp > 0, f"timestamp must be positive, got {self.timestamp}"
+
+
+class StreamExecResult:
+    """
+    Async iterator that yields StreamEvents as command output arrives.
+
+    Supports cancellation via the cancel() method, which sends SIGTERM
+    to the remote process and stops iteration.
+
+    Usage:
+        stream = conn.stream_exec("long_command")
+        async for event in stream:
+            print(event.stream, event.data)
+
+        # Or to cancel early:
+        await stream.cancel()
+    """
+
+    def __init__(
+        self,
+        process: asyncssh.SSHClientProcess,
+        emitter: "EventEmitter",
+        command: str,
+    ) -> None:
+        self._process = process
+        self._emitter = emitter
+        self._command = command
+        self._cancelled = False
+        self._bytes_stdout = 0
+        self._bytes_stderr = 0
+        self._exit_code: int | None = None
+        self._start_ms = time.time() * 1000
+        self._done = False
+
+    async def cancel(self) -> None:
+        """Cancel the running command."""
+        if self._cancelled or self._done:
+            return
+
+        self._cancelled = True
+        try:
+            self._process.terminate()
+            # Give process time to clean up
+            await asyncio.wait_for(self._process.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            # Force kill if terminate didn't work
+            self._process.kill()
+        except Exception:
+            pass  # Process may already be gone
+
+    def __aiter__(self) -> AsyncIterator[StreamEvent]:
+        return self
+
+    async def __anext__(self) -> StreamEvent:
+        """Yield the next stream event."""
+        if self._done:
+            raise StopAsyncIteration
+
+        if self._cancelled:
+            self._done = True
+            self._emit_exec_event()
+            raise StopAsyncIteration
+
+        try:
+            # Create tasks for reading from stdout and stderr
+            stdout_task = asyncio.create_task(
+                self._read_from_stream(self._process.stdout, "stdout")
+            )
+            stderr_task = asyncio.create_task(
+                self._read_from_stream(self._process.stderr, "stderr")
+            )
+            wait_task = asyncio.create_task(self._process.wait())
+
+            # Wait for first available data
+            done, pending = await asyncio.wait(
+                {stdout_task, stderr_task, wait_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            # Check what completed
+            for task in done:
+                result = task.result()
+                if result is not None:
+                    return result
+
+            # If wait_task completed, we're done
+            if wait_task in done:
+                self._exit_code = self._process.exit_status or 0
+                self._done = True
+                self._emit_exec_event()
+                return StreamEvent(
+                    timestamp=time.time() * 1000,
+                    stream="exit",
+                    exit_code=self._exit_code,
+                )
+
+            # No data available but not done - shouldn't happen
+            raise StopAsyncIteration
+
+        except asyncio.CancelledError:
+            self._cancelled = True
+            self._done = True
+            self._emit_exec_event()
+            raise StopAsyncIteration
+
+    async def _read_from_stream(
+        self,
+        stream: asyncssh.SSHReader,
+        stream_name: str,
+    ) -> StreamEvent | None:
+        """Read data from a stream and return a StreamEvent if data available."""
+        try:
+            # Read whatever is available (non-blocking after first char)
+            data = await asyncio.wait_for(stream.read(4096), timeout=0.1)
+            if data:
+                if stream_name == "stdout":
+                    self._bytes_stdout += len(data)
+                else:
+                    self._bytes_stderr += len(data)
+                return StreamEvent(
+                    timestamp=time.time() * 1000,
+                    stream=stream_name,
+                    data=data,
+                )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+        return None
+
+    def _emit_exec_event(self) -> None:
+        """Emit the EXEC event with streaming metadata."""
+        duration_ms = (time.time() * 1000) - self._start_ms
+        self._emitter.emit(
+            EventType.EXEC,
+            command=self._command,
+            streaming=True,
+            bytes_stdout=self._bytes_stdout,
+            bytes_stderr=self._bytes_stderr,
+            exit_code=self._exit_code,
+            cancelled=self._cancelled,
+            duration_ms=duration_ms,
+        )
 
 
 class SSHConnection:
@@ -90,6 +264,7 @@ class SSHConnection:
         event_log_path: Path | str | None = None,
         connect_timeout: float = 30.0,
         auth: AuthConfig | Sequence[AuthConfig] | None = None,
+        keepalive: KeepaliveConfig | None = None,
     ) -> None:
         """
         Initialise SSH connection parameters.
@@ -105,6 +280,7 @@ class SSHConnection:
             event_log_path: Optional path for JSONL event log
             connect_timeout: Connection timeout in seconds
             auth: AuthConfig or list of AuthConfigs to try in order
+            keepalive: Optional KeepaliveConfig for connection keepalive
         """
         # Preconditions
         assert host, "Host must be specified"
@@ -115,6 +291,8 @@ class SSHConnection:
         self._username = username
         self._known_hosts = str(known_hosts) if known_hosts else None
         self._connect_timeout = connect_timeout
+        self._keepalive = keepalive
+        self._disconnect_reason = DisconnectReason.NORMAL
 
         # Build auth configs from either new or legacy interface
         self._auth_configs = self._build_auth_configs(auth, password, client_keys)
@@ -261,6 +439,10 @@ class SSHConnection:
             "connect_timeout": self._connect_timeout,
         }
 
+        # Add keepalive options if configured
+        if self._keepalive is not None:
+            options.update(self._keepalive.to_asyncssh_options())
+
         if self._known_hosts is None:
             options["known_hosts"] = None
         else:
@@ -326,13 +508,17 @@ class SSHConnection:
 
         return SSHError(f"Unexpected error: {exc}", context=ctx)
 
-    async def _disconnect(self) -> None:
+    async def _disconnect(self, reason: DisconnectReason | None = None) -> None:
         """Close SSH connection."""
+        if reason is not None:
+            self._disconnect_reason = reason
+
         if self._conn:
             self._emitter.emit(
                 EventType.DISCONNECT,
                 host=self._host,
                 port=self._port,
+                reason=self._disconnect_reason.value,
             )
             self._conn.close()
             await self._conn.wait_closed()
@@ -374,3 +560,70 @@ class SSHConnection:
             except Exception as e:
                 event_data["error"] = str(e)
                 raise
+
+    def stream_exec(self, command: str) -> StreamExecResult:
+        """
+        Execute a command and stream output as it arrives.
+
+        Unlike exec(), this method yields StreamEvent objects as output
+        becomes available, enabling real-time processing of command output.
+
+        Args:
+            command: The command to execute
+
+        Returns:
+            StreamExecResult: Async iterator yielding StreamEvents
+
+        Usage:
+            async for event in conn.stream_exec("long_command"):
+                if event.stream == "stdout":
+                    print(event.data, end="")
+                elif event.stream == "exit":
+                    print(f"Exited with code {event.exit_code}")
+        """
+        # Precondition: connected
+        assert self._conn is not None, "Not connected. Use async with SSHConnection(...):"
+
+        # Start the process
+        process = self._conn.create_process(command)
+
+        # Return the async iterator wrapper
+        # Note: process is a coroutine, we need to handle it in the iterator
+        return _StreamExecResultFactory(process, self._emitter, command)
+
+
+class _StreamExecResultFactory:
+    """
+    Factory that creates StreamExecResult after process starts.
+
+    This exists because create_process returns a coroutine, and we need
+    to await it before creating the StreamExecResult.
+    """
+
+    def __init__(
+        self,
+        process_coro,
+        emitter: "EventEmitter",
+        command: str,
+    ) -> None:
+        self._process_coro = process_coro
+        self._emitter = emitter
+        self._command = command
+        self._stream_result: StreamExecResult | None = None
+
+    def __aiter__(self) -> "_StreamExecResultFactory":
+        return self
+
+    async def __anext__(self) -> StreamEvent:
+        if self._stream_result is None:
+            # First iteration - start the process
+            process = await self._process_coro
+            self._stream_result = StreamExecResult(process, self._emitter, self._command)
+
+        return await self._stream_result.__anext__()
+
+    async def cancel(self) -> None:
+        """Cancel the running command."""
+        if self._stream_result is not None:
+            await self._stream_result.cancel()
+

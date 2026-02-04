@@ -22,7 +22,21 @@ Error hierarchy:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class DisconnectReason(str, Enum):
+    """
+    Reasons for SSH disconnection.
+
+    Used in DISCONNECT events to classify why a connection ended.
+    """
+    NORMAL = "normal"
+    KEEPALIVE_TIMEOUT = "keepalive_timeout"
+    PROGRESS_TIMEOUT = "progress_timeout"
+    NETWORK_ERROR = "network_error"
+    AUTH_FAILURE = "auth_failure"
 
 
 @dataclass

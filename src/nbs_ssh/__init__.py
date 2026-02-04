@@ -9,13 +9,14 @@ from nbs_ssh.auth import (
     create_key_auth,
     create_password_auth,
 )
-from nbs_ssh.connection import ExecResult, SSHConnection
+from nbs_ssh.connection import ExecResult, SSHConnection, StreamEvent, StreamExecResult
 from nbs_ssh.errors import (
     AgentError,
     AuthenticationError,
     AuthFailed,
     ConnectionRefused,
     ConnectionTimeout,
+    DisconnectReason,
     ErrorContext,
     HostKeyMismatch,
     HostUnreachable,
@@ -25,11 +26,14 @@ from nbs_ssh.errors import (
     SSHError,
 )
 from nbs_ssh.events import Event, EventCollector, EventEmitter, EventType
+from nbs_ssh.keepalive import KeepaliveConfig, ProgressWatchdog
 
 __all__ = [
     # Connection
     "SSHConnection",
     "ExecResult",
+    "StreamEvent",
+    "StreamExecResult",
     # Auth
     "AuthConfig",
     "AuthMethod",
@@ -49,6 +53,10 @@ __all__ = [
     "KeyLoadError",
     "AgentError",
     "ErrorContext",
+    "DisconnectReason",
+    # Keepalive
+    "KeepaliveConfig",
+    "ProgressWatchdog",
     # Events
     "Event",
     "EventCollector",
