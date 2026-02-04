@@ -1,0 +1,25 @@
+# Decisions Log
+
+Append all significant decisions using this format:
+
+---
+[YYYY-MM-DD HH:MM] [DECISION TITLE]
+Context: [why this decision was needed]
+Decision: [what was decided]
+Implication: [what this means for the work]
+---
+
+---
+[2026-02-04 05:55] PROTOCOL ENGINE SELECTION
+Context: Need to choose SSH protocol implementation - Paramiko vs AsyncSSH
+Decision: Use AsyncSSH as the protocol engine
+Implication: Get proper keepalive semantics with interval + count_max for freeze detection. Async-first design. Paramiko's set_keepalive() doesn't provide the same "fail after N unanswered keepalives" behaviour.
+---
+
+---
+[2026-02-04 05:55] PYTHON VERSION
+Context: Available Python version in ~/local/cpython
+Decision: Use Python 3.12.12 (venv at ~/local/nbs-ssh/venv)
+Implication: Free-threaded Python (3.14t) benefits mentioned in spec are optional future enhancement. Core work is async-first.
+---
+
