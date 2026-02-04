@@ -8,16 +8,18 @@ Build an AI-inspectable SSH client library using AsyncSSH that provides exec, st
 
 Phase: IMPLEMENTATION
 Active workers: none
-Workers since last check: 2
+Workers since last check: 0 (self-check completed)
 
 ## Progress
 
 - [2026-02-04] Project structure created
 - [2026-02-04] Dependencies installed: asyncssh-2.22.0, pytest, pytest-asyncio, hypothesis
-- [2026-02-04] Worker-001 spawned: Foundation (test infrastructure + Hello SSH)
-- [2026-02-04] Worker-001 completed: All 5 deliverables done, tests pass/skip gracefully
-- [2026-02-04] Worker-002 completed: Auth Matrix verified + bug fix (ERROR event emission)
-- [2026-02-04] Total: 1929 lines of code, 29 tests passing
+- [2026-02-04] Worker-001 completed: Foundation (test infrastructure + Hello SSH)
+- [2026-02-04] Worker-002 completed: Auth Matrix verified + bug fix
+- [2026-02-04] Worker-003 completed: Streaming exec (StreamExecResult, cancel())
+- [2026-02-04] Worker-004 completed: Keepalive + freeze detection
+- [2026-02-04] Self-check completed: On track for terminal goal
+- [2026-02-04] Total: 3144 lines of code, 52 tests passing (12 skipped)
 
 ## Decisions Log
 
@@ -62,6 +64,46 @@ See `.nbs/decisions.log`
 - Always use unique session names (e.g., project-prefixed)
 - Consider that previous sessions may have completed work
 - Verify existing state before starting fresh implementation
+
+### Worker: worker-003-streaming - 2026-02-04
+
+**What went well:**
+- Implemented full StreamExecResult async iterator with cancellation
+- Clean factory pattern for lazy process creation
+- Unit tests work without Docker
+- Properly documented in worker log
+
+**What didn't work:**
+- Initial byte count test was too complex, had to simplify
+- Docker unavailable for integration tests
+
+**What we can do better:**
+- Design simpler unit tests from the start
+- Mock at appropriate abstraction level
+
+### Worker: worker-004-keepalive - 2026-02-04
+
+**What went well:**
+- Clean separation: KeepaliveConfig for SSH-level, ProgressWatchdog for app-level
+- Good test coverage (18 tests)
+- Proper integration with SSHConnection
+- DisconnectReason enum well-designed
+
+**What didn't work:**
+- Had to resolve merge conflicts with streaming worker changes
+
+**What we can do better:**
+- Coordinate parallel workers to avoid conflicts
+- Consider serial execution for closely-related slices
+
+### Self-Check - 2026-02-04 (after 4 workers)
+
+- [x] Am I still pursuing terminal goal? YES - exec, streaming exec, keepalive done. Port forwarding, expect/respond, supervisor, evidence bundles remaining.
+- [x] Am I delegating vs doing tactical work myself? YES - all implementation via workers
+- [x] Have I captured learnings that should improve future tasks? YES - session naming, parallel coordination
+- [x] Should I escalate anything to human? NO - on track
+
+Remaining slices: 4 (Supervisor FSM), 5 (Port Forwards), 6 (Expect/Respond), 7 (Evidence Bundles), 8 (Windows)
 
 <!--
 Template for each entry:

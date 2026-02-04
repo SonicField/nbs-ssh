@@ -39,6 +39,10 @@ class EventType(str, Enum):
     KEEPALIVE_TIMEOUT = "KEEPALIVE_TIMEOUT"
     # Progress watchdog events
     PROGRESS_WARNING = "PROGRESS_WARNING"
+    # Supervisor events
+    STATE_CHANGE = "STATE_CHANGE"
+    # Port forwarding events
+    FORWARD = "FORWARD"
 
 
 @dataclass

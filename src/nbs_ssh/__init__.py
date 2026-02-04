@@ -9,6 +9,20 @@ from nbs_ssh.auth import (
     create_key_auth,
     create_password_auth,
 )
+from nbs_ssh.automation import (
+    AutomationEngine,
+    ExpectPattern,
+    ExpectRespond,
+    ExpectResult,
+    ExpectTimeout,
+    ExpectTimeoutError,
+    InteractionType,
+    PatternType,
+    RespondAction,
+    RespondDelay,
+    Transcript,
+    TranscriptEntry,
+)
 from nbs_ssh.connection import ExecResult, SSHConnection, StreamEvent, StreamExecResult
 from nbs_ssh.errors import (
     AgentError,
@@ -26,7 +40,9 @@ from nbs_ssh.errors import (
     SSHError,
 )
 from nbs_ssh.events import Event, EventCollector, EventEmitter, EventType
+from nbs_ssh.forwarding import ForwardHandle, ForwardIntent, ForwardManager, ForwardType
 from nbs_ssh.keepalive import KeepaliveConfig, ProgressWatchdog
+from nbs_ssh.supervisor import ConnectionState, RetryPolicy, SSHSupervisor
 
 __all__ = [
     # Connection
@@ -40,6 +56,24 @@ __all__ = [
     "create_password_auth",
     "create_key_auth",
     "create_agent_auth",
+    # Automation
+    "AutomationEngine",
+    "ExpectPattern",
+    "ExpectRespond",
+    "ExpectResult",
+    "ExpectTimeout",
+    "ExpectTimeoutError",
+    "InteractionType",
+    "PatternType",
+    "RespondAction",
+    "RespondDelay",
+    "Transcript",
+    "TranscriptEntry",
+    # Forwarding
+    "ForwardType",
+    "ForwardIntent",
+    "ForwardHandle",
+    "ForwardManager",
     # Errors
     "SSHError",
     "SSHConnectionError",
@@ -57,6 +91,10 @@ __all__ = [
     # Keepalive
     "KeepaliveConfig",
     "ProgressWatchdog",
+    # Supervisor
+    "ConnectionState",
+    "RetryPolicy",
+    "SSHSupervisor",
     # Events
     "Event",
     "EventCollector",
