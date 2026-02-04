@@ -6,9 +6,10 @@ Build an AI-inspectable SSH client library using AsyncSSH that provides exec, st
 
 ## Current State
 
-Phase: COMPLETE
-Active workers: none
+Phase: ACTIVE
+Active workers: worker-011-test-migration, worker-012-cli
 Workers since last check: 1
+Remaining: Worker-011 (test migration), Worker-012 (CLI), Worker-013 (docs)
 
 ## Progress
 
