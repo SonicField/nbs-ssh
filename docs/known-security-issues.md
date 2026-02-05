@@ -124,11 +124,17 @@ nbs-ssh relies on AsyncSSH defaults.
 
 ### HIGH-2: Remote Forwarding Defaults
 
-**Status: FUTURE**
+**Status: FIXED**
 
-Remote forwarding may bind to all interfaces on the remote server.
+Remote forwarding now defaults to binding on localhost only, matching OpenSSH's `GatewayPorts=no` behaviour. To bind to all interfaces, explicitly pass `remote_host=""` or `remote_host="0.0.0.0"`.
 
-**Recommendation:** Explicitly specify `remote_host="localhost"` when creating remote forwardings.
+```python
+# Default: binds to localhost only (secure)
+handle = await manager.forward_remote(8080, "localhost", 3000)
+
+# Explicit all-interface binding (use with caution)
+handle = await manager.forward_remote(8080, "localhost", 3000, remote_host="")
+```
 
 ---
 

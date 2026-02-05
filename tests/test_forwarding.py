@@ -73,6 +73,28 @@ class TestForwardIntent:
         )
         assert intent.forward_type == ForwardType.REMOTE
 
+    def test_remote_forward_explicit_all_interfaces(self) -> None:
+        """REMOTE forward with explicit empty string binds to all interfaces."""
+        intent = ForwardIntent(
+            forward_type=ForwardType.REMOTE,
+            local_host="localhost",
+            local_port=3000,
+            remote_host="",  # Explicit all-interface binding
+            remote_port=8080,
+        )
+        assert intent.remote_host == ""
+
+    def test_remote_forward_explicit_zero_zero(self) -> None:
+        """REMOTE forward with 0.0.0.0 binds to all interfaces."""
+        intent = ForwardIntent(
+            forward_type=ForwardType.REMOTE,
+            local_host="localhost",
+            local_port=3000,
+            remote_host="0.0.0.0",  # Explicit all-interface binding
+            remote_port=8080,
+        )
+        assert intent.remote_host == "0.0.0.0"
+
     def test_negative_local_port_fails(self) -> None:
         """Negative local_port raises AssertionError."""
         with pytest.raises(AssertionError, match="local_port must be >= 0"):
@@ -174,6 +196,22 @@ class TestForwardManager:
         with pytest.raises(AssertionError, match="No SSH connection set"):
             import asyncio
             asyncio.run(manager.forward_local(8080, "localhost", 80))
+
+
+class TestForwardRemoteDefaults:
+    """Tests for remote forwarding default behaviour (HIGH-2 fix)."""
+
+    def test_forward_remote_defaults_to_localhost(self) -> None:
+        """ForwardManager.forward_remote() defaults remote_host to localhost."""
+        import asyncio
+        import inspect
+
+        # Verify the signature has the correct default
+        sig = inspect.signature(ForwardManager.forward_remote)
+        remote_host_param = sig.parameters["remote_host"]
+        assert remote_host_param.default == "localhost", (
+            f"remote_host default should be 'localhost', got {remote_host_param.default!r}"
+        )
 
 
 class TestForwardEvents:

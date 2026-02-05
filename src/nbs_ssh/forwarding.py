@@ -230,7 +230,7 @@ class ForwardManager:
         remote_port: int,
         local_host: str,
         local_port: int,
-        remote_host: str = "",
+        remote_host: str = "localhost",
     ) -> ForwardHandle:
         """
         Create a remote port forward.
@@ -238,11 +238,16 @@ class ForwardManager:
         Traffic to the remote side on remote_host:remote_port is
         forwarded to local_host:local_port on the client side.
 
+        Security: The default remote_host="localhost" binds only to the
+        loopback interface on the remote server, matching OpenSSH's
+        GatewayPorts=no behaviour. To bind to all interfaces, explicitly
+        pass remote_host="" or remote_host="0.0.0.0".
+
         Args:
             remote_port: Remote port to listen on
             local_host: Local host to forward to
             local_port: Local port to forward to
-            remote_host: Remote interface to bind to (empty for all)
+            remote_host: Remote interface to bind to (default: localhost)
 
         Returns:
             ForwardHandle with close() method
