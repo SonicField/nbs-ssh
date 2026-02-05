@@ -9,21 +9,33 @@ from nbs_ssh.secure_string import SecureString, SecureStringEradicated
 class TestSecureStringBasicOperations:
     """Test basic string operations on SecureString."""
 
-    def test_str_conversion(self):
-        """SecureString can be converted to str."""
+    def test_reveal_returns_actual_value(self):
+        """reveal() returns the actual secret."""
         secret = SecureString("password123")
-        assert str(secret) == "password123"
+        assert secret.reveal() == "password123"
 
-    def test_bytes_conversion(self):
-        """SecureString can be converted to bytes."""
+    def test_reveal_bytes_returns_actual_value(self):
+        """reveal_bytes() returns the actual secret as bytes."""
         secret = SecureString("password123")
-        assert bytes(secret) == b"password123"
+        assert secret.reveal_bytes() == b"password123"
+
+    def test_str_hides_value(self):
+        """str() returns <hidden>, never the secret."""
+        secret = SecureString("password123")
+        assert str(secret) == "<hidden>"
+        assert "password" not in str(secret)
+
+    def test_bytes_hides_value(self):
+        """bytes() returns b'<hidden>', never the secret."""
+        secret = SecureString("password123")
+        assert bytes(secret) == b"<hidden>"
+        assert b"password" not in bytes(secret)
 
     def test_init_from_bytes(self):
         """SecureString can be initialised from bytes."""
         secret = SecureString(b"password123")
-        assert str(secret) == "password123"
-        assert bytes(secret) == b"password123"
+        assert secret.reveal() == "password123"
+        assert secret.reveal_bytes() == b"password123"
 
     def test_len(self):
         """SecureString reports correct length."""
@@ -106,7 +118,7 @@ class TestSecureStringHash:
 
 
 class TestSecureStringRepr:
-    """Test repr never reveals secrets."""
+    """Test repr and str never reveal secrets."""
 
     def test_repr_hides_secret(self):
         """repr never shows the actual secret."""
@@ -117,6 +129,14 @@ class TestSecureStringRepr:
         assert "<hidden>" in r
         assert "SecureString" in r
 
+    def test_str_hides_secret(self):
+        """str never shows the actual secret."""
+        secret = SecureString("supersecretpassword")
+        s = str(secret)
+        assert "supersecret" not in s
+        assert "password" not in s.lower()
+        assert "<hidden>" in s
+
     def test_repr_shows_eradicated(self):
         """repr shows eradicated state."""
         secret = SecureString("password")
@@ -124,6 +144,12 @@ class TestSecureStringRepr:
         r = repr(secret)
         assert "<eradicated>" in r
         assert "SecureString" in r
+
+    def test_str_shows_eradicated(self):
+        """str shows eradicated state after eradication."""
+        secret = SecureString("password")
+        secret.eradicate()
+        assert str(secret) == "<eradicated>"
 
 
 class TestSecureStringEradication:
@@ -160,19 +186,33 @@ class TestSecureStringEradication:
         secret.eradicate()
         assert secret.is_eradicated is True
 
-    def test_str_raises_after_eradicate(self):
-        """str() raises after eradication."""
+    def test_reveal_raises_after_eradicate(self):
+        """reveal() raises after eradication."""
         secret = SecureString("password")
         secret.eradicate()
         with pytest.raises(SecureStringEradicated):
-            str(secret)
+            secret.reveal()
 
-    def test_bytes_raises_after_eradicate(self):
-        """bytes() raises after eradication."""
+    def test_reveal_bytes_raises_after_eradicate(self):
+        """reveal_bytes() raises after eradication."""
         secret = SecureString("password")
         secret.eradicate()
         with pytest.raises(SecureStringEradicated):
-            bytes(secret)
+            secret.reveal_bytes()
+
+    def test_str_safe_after_eradicate(self):
+        """str() returns <eradicated> after eradication (does not raise)."""
+        secret = SecureString("password")
+        secret.eradicate()
+        # str() should NOT raise - it returns safe string
+        assert str(secret) == "<eradicated>"
+
+    def test_bytes_safe_after_eradicate(self):
+        """bytes() returns b'<eradicated>' after eradication (does not raise)."""
+        secret = SecureString("password")
+        secret.eradicate()
+        # bytes() should NOT raise - it returns safe bytes
+        assert bytes(secret) == b"<eradicated>"
 
     def test_len_raises_after_eradicate(self):
         """len() raises after eradication."""
@@ -217,32 +257,37 @@ class TestSecureStringUnicode:
     def test_unicode_characters(self):
         """SecureString handles unicode correctly."""
         secret = SecureString("пароль")  # Russian for "password"
-        assert str(secret) == "пароль"
+        assert secret.reveal() == "пароль"
 
     def test_unicode_emoji(self):
         """SecureString handles emoji."""
         secret = SecureString("pass🔐word")
-        assert str(secret) == "pass🔐word"
+        assert secret.reveal() == "pass🔐word"
 
     def test_unicode_roundtrip(self):
-        """Unicode survives string->SecureString->string."""
+        """Unicode survives string->SecureString->reveal()."""
         original = "日本語パスワード"  # Japanese for "Japanese password"
         secret = SecureString(original)
-        assert str(secret) == original
+        assert secret.reveal() == original
 
 
 class TestSecureStringEmptyString:
     """Test edge case with empty string."""
 
-    def test_empty_string_str(self):
-        """Empty SecureString converts to empty string."""
+    def test_empty_string_reveal(self):
+        """Empty SecureString reveals empty string."""
         secret = SecureString("")
-        assert str(secret) == ""
+        assert secret.reveal() == ""
 
-    def test_empty_string_bytes(self):
-        """Empty SecureString converts to empty bytes."""
+    def test_empty_string_reveal_bytes(self):
+        """Empty SecureString reveals empty bytes."""
         secret = SecureString("")
-        assert bytes(secret) == b""
+        assert secret.reveal_bytes() == b""
+
+    def test_empty_string_str_hidden(self):
+        """Empty SecureString str() still shows <hidden>."""
+        secret = SecureString("")
+        assert str(secret) == "<hidden>"
 
     def test_empty_string_len(self):
         """Empty SecureString has length 0."""
@@ -303,7 +348,38 @@ class TestSecureStringExceptionMessages:
         secret = SecureString("password")
         secret.eradicate()
         try:
-            str(secret)
+            secret.reveal()
         except SecureStringEradicated as e:
             assert "eradicated" in str(e).lower()
             assert "cannot be accessed" in str(e).lower()
+
+
+class TestSecureStringExplicitReveal:
+    """Test that reveal() requires explicit intent."""
+
+    def test_accidental_str_is_safe(self):
+        """Accidentally using str() in f-string is safe."""
+        secret = SecureString("mysecretpassword")
+        # This would happen if someone wrote f"Password: {secret}"
+        message = f"Password: {secret}"
+        assert "mysecret" not in message
+        assert "<hidden>" in message
+
+    def test_accidental_print_is_safe(self):
+        """Accidentally printing SecureString is safe."""
+        secret = SecureString("mysecretpassword")
+        # str() is called implicitly by print()
+        result = str(secret)
+        assert "mysecret" not in result
+        assert "<hidden>" in result
+
+    def test_explicit_reveal_required(self):
+        """Getting the actual value requires explicit reveal()."""
+        secret = SecureString("mysecretpassword")
+        # These do NOT reveal the secret:
+        assert "mysecret" not in str(secret)
+        assert "mysecret" not in repr(secret)
+        assert b"mysecret" not in bytes(secret)
+        # Only reveal() and reveal_bytes() work:
+        assert secret.reveal() == "mysecretpassword"
+        assert secret.reveal_bytes() == b"mysecretpassword"

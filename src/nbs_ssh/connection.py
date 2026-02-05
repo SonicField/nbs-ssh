@@ -67,12 +67,17 @@ from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
 from nbs_ssh.secure_string import SecureString
 
 
-def _to_str(value: str | SecureString | None) -> str | None:
-    """Convert SecureString to str for asyncssh compatibility."""
+def _reveal(value: str | SecureString | None) -> str | None:
+    """
+    Explicitly reveal a SecureString for passing to asyncssh.
+
+    This function makes the intent clear: we are deliberately extracting
+    the secret value to pass to an external API.
+    """
     if value is None:
         return None
     if isinstance(value, SecureString):
-        return str(value)
+        return value.reveal()
     return value
 
 
@@ -655,13 +660,13 @@ class SSHConnection:
             options["known_hosts"] = self._known_hosts
 
         if auth_config.method == AuthMethod.PASSWORD:
-            options["password"] = _to_str(auth_config.password)
+            options["password"] = _reveal(auth_config.password)
             options["client_keys"] = []  # Disable key auth
 
         elif auth_config.method == AuthMethod.PRIVATE_KEY:
             assert auth_config.key_path is not None
             # Load key with our error handling
-            key = load_private_key(auth_config.key_path, _to_str(auth_config.passphrase))
+            key = load_private_key(auth_config.key_path, _reveal(auth_config.passphrase))
             options["client_keys"] = [key]
             options["password"] = None  # Disable password auth
 
@@ -707,7 +712,7 @@ class SSHConnection:
             assert auth_config.pkcs11_provider is not None
             pkcs11_keys = load_pkcs11_keys(
                 provider=auth_config.pkcs11_provider,
-                pin=_to_str(auth_config.pkcs11_pin),
+                pin=_reveal(auth_config.pkcs11_pin),
                 token_label=auth_config.pkcs11_token_label,
                 token_serial=auth_config.pkcs11_token_serial,
                 key_label=auth_config.pkcs11_key_label,
@@ -1191,7 +1196,7 @@ class _KbdintSSHClient(asyncssh.SSHClient):
 
         # Otherwise, use password for all prompts
         if self._auth_config.password is not None:
-            password_str = _to_str(self._auth_config.password)
+            password_str = _reveal(self._auth_config.password)
             return [password_str] * len(prompts)
 
         # No way to respond - cancel auth

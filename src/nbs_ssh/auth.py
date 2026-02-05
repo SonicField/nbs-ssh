@@ -224,7 +224,7 @@ def load_private_key(
     # Convert SecureString to str for asyncssh
     passphrase_str: str | None = None
     if passphrase is not None:
-        passphrase_str = str(passphrase) if isinstance(passphrase, SecureString) else passphrase
+        passphrase_str = passphrase.reveal() if isinstance(passphrase, SecureString) else passphrase
 
     try:
         return asyncssh.read_private_key(str(key_path), passphrase=passphrase_str)
@@ -606,7 +606,7 @@ def load_pkcs11_keys(
     # Convert SecureString to str for asyncssh
     pin_str: str | None = None
     if pin is not None:
-        pin_str = str(pin) if isinstance(pin, SecureString) else pin
+        pin_str = pin.reveal() if isinstance(pin, SecureString) else pin
 
     try:
         return asyncssh.load_pkcs11_keys(
@@ -747,7 +747,7 @@ def load_security_key_keys(
         )
 
     # Convert SecureString to str for asyncssh
-    pin_str = str(pin) if isinstance(pin, SecureString) else pin
+    pin_str = pin.reveal() if isinstance(pin, SecureString) else pin
 
     try:
         return asyncssh.load_resident_keys(
@@ -821,7 +821,7 @@ def load_security_key_file(
     # Convert SecureString to str for asyncssh
     passphrase_str: str | None = None
     if passphrase is not None:
-        passphrase_str = str(passphrase) if isinstance(passphrase, SecureString) else passphrase
+        passphrase_str = passphrase.reveal() if isinstance(passphrase, SecureString) else passphrase
 
     try:
         return asyncssh.read_private_key(str(key_path), passphrase=passphrase_str)

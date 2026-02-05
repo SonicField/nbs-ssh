@@ -68,12 +68,56 @@ class SecureString:
             )
 
     def __str__(self) -> str:
-        """Return the string value."""
+        """
+        Return a safe representation - NEVER the actual secret.
+
+        To get the actual value, use reveal() explicitly.
+        This prevents accidental leakage via str() in logging, f-strings, etc.
+        """
+        if self._eradicated:
+            return "<eradicated>"
+        return "<hidden>"
+
+    def __bytes__(self) -> bytes:
+        """
+        Return a safe representation - NEVER the actual secret.
+
+        To get the actual value, use reveal_bytes() explicitly.
+        """
+        if self._eradicated:
+            return b"<eradicated>"
+        return b"<hidden>"
+
+    def reveal(self) -> str:
+        """
+        Explicitly reveal the secret as a string.
+
+        This method name makes the intent clear: you are deliberately
+        accessing a secret value. Use this when passing to APIs that
+        require the actual string value (e.g., asyncssh password parameter).
+
+        Returns:
+            The actual secret string
+
+        Raises:
+            SecureStringEradicated: If the string has been eradicated
+        """
         self._check_eradicated()
         return bytes(self._buffer).decode('utf-8')
 
-    def __bytes__(self) -> bytes:
-        """Return the bytes value."""
+    def reveal_bytes(self) -> bytes:
+        """
+        Explicitly reveal the secret as bytes.
+
+        This method name makes the intent clear: you are deliberately
+        accessing a secret value.
+
+        Returns:
+            The actual secret as bytes
+
+        Raises:
+            SecureStringEradicated: If the string has been eradicated
+        """
         self._check_eradicated()
         return bytes(self._buffer)
 
@@ -100,7 +144,7 @@ class SecureString:
             other._check_eradicated()
             return bytes(self._buffer) == bytes(other._buffer)
         if isinstance(other, str):
-            return str(self) == other
+            return self.reveal() == other
         if isinstance(other, bytes):
             return bytes(self._buffer) == other
         return NotImplemented
