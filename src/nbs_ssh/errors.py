@@ -206,3 +206,31 @@ class AgentError(AuthenticationError):
         if reason:
             context.extra["reason"] = reason
         super().__init__(message, context)
+
+
+class CertificateError(AuthenticationError):
+    """
+    SSH certificate error.
+
+    This is raised when:
+    - Certificate file does not exist
+    - Certificate file is not readable
+    - Certificate format is invalid
+    - Certificate has expired
+    - Certificate does not match the private key
+    """
+
+    def __init__(
+        self,
+        message: str,
+        cert_path: str | None = None,
+        reason: str | None = None,
+        context: ErrorContext | None = None,
+    ) -> None:
+        if context is None:
+            context = ErrorContext()
+        if cert_path:
+            context.extra["cert_path"] = cert_path
+        if reason:
+            context.extra["reason"] = reason
+        super().__init__(message, context)
