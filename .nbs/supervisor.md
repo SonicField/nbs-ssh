@@ -8,8 +8,8 @@ Build an AI-inspectable SSH client library using AsyncSSH that provides exec, st
 
 Phase: COMPLETE
 Active workers: none
-Workers since last check: 3
-Remaining: none - **253 tests pass, 0 skipped**
+Workers since last check: 1
+Remaining: none - **247 tests pass, 0 skipped**
 
 ## Progress
 
@@ -35,6 +35,7 @@ Remaining: none - **253 tests pass, 0 skipped**
 - [2026-02-05] Worker-014 completed: StreamExecResult bug fix (7 tests unskipped)
 - [2026-02-05] Worker-015 completed: Key auth for MockSSHServer (1 test unskipped)
 - [2026-02-05] **ALL TESTS PASS**: 253 passed, 0 skipped
+- [2026-02-05] Worker-016 completed: Interactive shell mode (PTY, raw terminal, SIGWINCH)
 
 ## Decisions Log
 
@@ -244,6 +245,21 @@ Remaining slices: 4 (Supervisor FSM), 5 (Port Forwards), 6 (Expect/Respond), 7 (
 - Comprehensive documentation (4 files, 2643 lines)
 
 [Reset workers_since_check to 0]
+
+### Worker: worker-016-interactive - 2026-02-05
+
+**What went well:**
+- Clean implementation using tty.setraw() and SIGWINCH handler
+- MockSSHServer extended to support shell sessions
+- 6 new tests, all pass
+- Worker understood PTY/terminal requirements from asyncssh docs
+
+**What didn't work:**
+- Nothing notable - task completed smoothly
+
+**What we can do better:**
+- Terminal goal should have explicitly included "interactive shell" as baseline
+- Assumptions about "SSH client" vs "SSH library" caused capability gap
 
 <!--
 Template for each entry:
