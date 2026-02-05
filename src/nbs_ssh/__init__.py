@@ -6,11 +6,14 @@ from nbs_ssh.auth import (
     AuthConfig,
     AuthMethod,
     check_gssapi_available,
+    check_pkcs11_available,
     create_agent_auth,
     create_gssapi_auth,
     create_key_auth,
     create_keyboard_interactive_auth,
     create_password_auth,
+    create_pkcs11_auth,
+    load_pkcs11_keys,
 )
 from nbs_ssh.automation import (
     AutomationEngine,
@@ -26,6 +29,7 @@ from nbs_ssh.automation import (
     Transcript,
     TranscriptEntry,
 )
+from nbs_ssh.config import SSHConfig, SSHHostConfig, get_ssh_config
 from nbs_ssh.connection import ExecResult, SSHConnection, StreamEvent, StreamExecResult
 from nbs_ssh.errors import (
     AgentError,
@@ -73,6 +77,10 @@ __all__ = [
     "ExecResult",
     "StreamEvent",
     "StreamExecResult",
+    # Config
+    "SSHConfig",
+    "SSHHostConfig",
+    "get_ssh_config",
     # Auth
     "AuthConfig",
     "AuthMethod",
@@ -81,7 +89,10 @@ __all__ = [
     "create_agent_auth",
     "create_gssapi_auth",
     "create_keyboard_interactive_auth",
+    "create_pkcs11_auth",
     "check_gssapi_available",
+    "check_pkcs11_available",
+    "load_pkcs11_keys",
     # Automation
     "AutomationEngine",
     "ExpectPattern",

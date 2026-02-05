@@ -29,14 +29,17 @@ from nbs_ssh.auth import (
     AuthMethod,
     check_agent_available,
     check_gssapi_available,
+    check_pkcs11_available,
     create_agent_auth,
     create_cert_auth,
     create_gssapi_auth,
     create_key_auth,
     create_keyboard_interactive_auth,
     create_password_auth,
+    create_pkcs11_auth,
     get_agent_keys,
     load_certificate,
+    load_pkcs11_keys,
     load_private_key,
 )
 from nbs_ssh.errors import (
@@ -57,6 +60,7 @@ from nbs_ssh.errors import (
 )
 from nbs_ssh.events import EventCollector, EventEmitter, EventType
 from nbs_ssh.evidence import AlgorithmInfo, EvidenceBundle, HostInfo, TimingInfo
+from nbs_ssh.config import SSHConfig, SSHHostConfig
 from nbs_ssh.keepalive import KeepaliveConfig
 from nbs_ssh.platform import get_default_key_paths
 
@@ -278,39 +282,80 @@ class SSHConnection:
     def __init__(
         self,
         host: str,
-        port: int = 22,
+        port: int | None = None,
         username: str | None = None,
         password: str | None = None,
         client_keys: Sequence[Path | str] | None = None,
         known_hosts: Path | str | None = None,
         event_collector: EventCollector | None = None,
         event_log_path: Path | str | None = None,
-        connect_timeout: float = 30.0,
+        connect_timeout: float | None = None,
         auth: AuthConfig | Sequence[AuthConfig] | None = None,
         keepalive: KeepaliveConfig | None = None,
         proxy_jump: str | Sequence[str] | None = None,
+        use_ssh_config: bool = True,
+        ssh_config: SSHConfig | None = None,
     ) -> None:
         """
         Initialise SSH connection parameters.
 
         Args:
-            host: SSH server hostname or IP
-            port: SSH server port (default 22)
-            username: Username for authentication
+            host: SSH server hostname or IP (can be an alias from ~/.ssh/config)
+            port: SSH server port (default 22, or from SSH config)
+            username: Username for authentication (defaults to SSH config or current user)
             password: Password for password auth (legacy, prefer auth=)
             client_keys: Paths to private keys (legacy, prefer auth=)
             known_hosts: Path to known_hosts file (None to disable checking)
             event_collector: Optional collector for in-memory event capture
             event_log_path: Optional path for JSONL event log
-            connect_timeout: Connection timeout in seconds
+            connect_timeout: Connection timeout in seconds (default 30, or from SSH config)
             auth: AuthConfig or list of AuthConfigs to try in order
             keepalive: Optional KeepaliveConfig for connection keepalive
             proxy_jump: Jump host(s) for connection tunnelling (like ssh -J).
                         Can be a single host string "[user@]host[:port]",
                         a comma-separated string of hosts, or a list of hosts.
+            use_ssh_config: Whether to read ~/.ssh/config and /etc/ssh/ssh_config
+            ssh_config: Pre-loaded SSHConfig object (if None, loads default configs)
         """
         # Preconditions
         assert host, "Host must be specified"
+
+        # Load SSH config if enabled
+        self._host_config: SSHHostConfig | None = None
+        self._original_host = host
+
+        if use_ssh_config:
+            if ssh_config is None:
+                ssh_config = SSHConfig()
+            self._host_config = ssh_config.lookup(host)
+
+        # Apply SSH config settings (explicit parameters take precedence)
+        if self._host_config:
+            # HostName aliasing
+            host = self._host_config.get_hostname(host)
+
+            # Port from config if not specified
+            if port is None:
+                port = self._host_config.port
+
+            # Username from config if not specified
+            if username is None:
+                username = self._host_config.user
+
+            # ConnectTimeout from config if not specified
+            if connect_timeout is None and self._host_config.connect_timeout is not None:
+                connect_timeout = float(self._host_config.connect_timeout)
+
+            # ProxyJump from config if not specified
+            if proxy_jump is None and self._host_config.proxy_jump:
+                proxy_jump = self._host_config.proxy_jump
+
+        # Apply defaults for parameters not set by config
+        if port is None:
+            port = 22
+        if connect_timeout is None:
+            connect_timeout = 30.0
+
         assert port > 0, f"Port must be positive, got {port}"
 
         self._host = host
@@ -607,6 +652,26 @@ class SSHConnection:
 
             self._conn = await asyncssh.connect(client_factory=create_client, **options)
             return  # Exit early, connection already made
+
+        elif auth_config.method == AuthMethod.PKCS11:
+            # PKCS#11 smart card/hardware token authentication
+            assert auth_config.pkcs11_provider is not None
+            pkcs11_keys = load_pkcs11_keys(
+                provider=auth_config.pkcs11_provider,
+                pin=auth_config.pkcs11_pin,
+                token_label=auth_config.pkcs11_token_label,
+                token_serial=auth_config.pkcs11_token_serial,
+                key_label=auth_config.pkcs11_key_label,
+                key_id=auth_config.pkcs11_key_id,
+            )
+            if not pkcs11_keys:
+                raise KeyLoadError(
+                    f"No keys found on PKCS#11 provider {auth_config.pkcs11_provider}",
+                    key_path=auth_config.pkcs11_provider,
+                    reason="no_keys_found",
+                )
+            options["client_keys"] = list(pkcs11_keys)
+            options["password"] = None  # Disable password auth
 
         self._conn = await asyncssh.connect(**options)
 

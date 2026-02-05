@@ -27,6 +27,7 @@ class AuthMethod(str, Enum):
     SSH_AGENT = "ssh_agent"
     GSSAPI = "gssapi"
     KEYBOARD_INTERACTIVE = "keyboard_interactive"
+    PKCS11 = "pkcs11"
 
 
 @dataclass
@@ -40,6 +41,7 @@ class AuthConfig:
     - SSH agent authentication
     - GSSAPI/Kerberos authentication
     - Keyboard-interactive authentication (2FA, challenge-response)
+    - PKCS#11 smart card/hardware token authentication
 
     Usage:
         # Password auth
@@ -66,6 +68,13 @@ class AuthConfig:
             kbdint_response_callback=my_prompt_callback,
         )
 
+        # PKCS#11 smart card/hardware token auth
+        config = AuthConfig(
+            method=AuthMethod.PKCS11,
+            pkcs11_provider="/usr/lib/opensc-pkcs11.so",
+            pkcs11_pin="123456",  # Optional
+        )
+
         # Multiple methods (fallback)
         configs = [
             AuthConfig(method=AuthMethod.SSH_AGENT),
@@ -83,6 +92,13 @@ class AuthConfig:
     kbdint_response_callback: Callable[
         [str, str, list[tuple[str, bool]]], list[str]
     ] | None = None
+    # PKCS#11 options
+    pkcs11_provider: str | None = None  # Path to PKCS#11 shared library
+    pkcs11_pin: str | None = None  # PIN for token access
+    pkcs11_token_label: str | None = None  # Optional token label filter
+    pkcs11_token_serial: str | bytes | None = None  # Optional token serial filter
+    pkcs11_key_label: str | None = None  # Optional key label filter
+    pkcs11_key_id: str | bytes | None = None  # Optional key ID filter
 
     def __post_init__(self) -> None:
         """Validate configuration."""
@@ -94,6 +110,10 @@ class AuthConfig:
             assert self.key_path is not None, \
                 "key_path required for PRIVATE_KEY auth method"
 
+        if self.method == AuthMethod.PKCS11:
+            assert self.pkcs11_provider is not None, \
+                "pkcs11_provider required for PKCS11 auth method"
+
         # Normalise key_path to Path using platform-aware expansion
         if self.key_path is not None:
             self.key_path = expand_path(self.key_path)
@@ -103,6 +123,12 @@ class AuthConfig:
         result = {"method": self.method.value}
         if self.key_path:
             result["key_path"] = str(self.key_path)
+        if self.pkcs11_provider:
+            result["pkcs11_provider"] = self.pkcs11_provider
+        if self.pkcs11_token_label:
+            result["pkcs11_token_label"] = self.pkcs11_token_label
+        if self.pkcs11_key_label:
+            result["pkcs11_key_label"] = self.pkcs11_key_label
         return result
 
 
@@ -337,4 +363,129 @@ def check_gssapi_available() -> bool:
             return creds.lifetime > 0
         except Exception:
             return False
+
+
+def check_pkcs11_available() -> bool:
+    """
+    Check if PKCS#11 support is available.
+
+    Returns True if the python-pkcs11 package is installed and
+    asyncssh PKCS#11 support is enabled.
+
+    Returns:
+        True if PKCS#11 authentication is available
+    """
+    try:
+        from asyncssh.pkcs11 import pkcs11_available
+        return pkcs11_available
+    except ImportError:
+        return False
+
+
+def load_pkcs11_keys(
+    provider: str,
+    pin: str | None = None,
+    *,
+    token_label: str | None = None,
+    token_serial: str | bytes | None = None,
+    key_label: str | None = None,
+    key_id: str | bytes | None = None,
+) -> Sequence[asyncssh.SSHKeyPair]:
+    """
+    Load SSH key pairs from a PKCS#11 token/smart card.
+
+    This wraps asyncssh.load_pkcs11_keys() with additional error handling.
+
+    Args:
+        provider: Path to the PKCS#11 provider shared library
+                  (e.g., /usr/lib/opensc-pkcs11.so, /usr/lib/libyubico-pkcs11.so)
+        pin: Optional PIN for accessing the token
+        token_label: Filter by token label
+        token_serial: Filter by token serial number
+        key_label: Filter by key label
+        key_id: Filter by key ID (hex string or bytes)
+
+    Returns:
+        List of SSHKeyPair objects from the token
+
+    Raises:
+        ValueError: If PKCS#11 support is not available
+        KeyLoadError: If keys cannot be loaded from the token
+    """
+    if not check_pkcs11_available():
+        raise ValueError(
+            "PKCS#11 support not available. Install python-pkcs11: "
+            "pip install python-pkcs11"
+        )
+
+    try:
+        return asyncssh.load_pkcs11_keys(
+            provider=provider,
+            pin=pin,
+            token_label=token_label,
+            token_serial=token_serial,
+            key_label=key_label,
+            key_id=key_id,
+        )
+    except Exception as e:
+        raise KeyLoadError(
+            f"Failed to load keys from PKCS#11 provider {provider}: {e}",
+            key_path=provider,
+            reason="pkcs11_error",
+        ) from e
+
+
+def create_pkcs11_auth(
+    provider: str,
+    pin: str | None = None,
+    *,
+    token_label: str | None = None,
+    token_serial: str | bytes | None = None,
+    key_label: str | None = None,
+    key_id: str | bytes | None = None,
+) -> AuthConfig:
+    """
+    Create PKCS#11 smart card/hardware token authentication config.
+
+    PKCS#11 allows using keys stored on hardware security modules (HSMs),
+    smart cards, or tokens like YubiKey for SSH authentication.
+
+    Common PKCS#11 provider paths:
+    - OpenSC: /usr/lib/opensc-pkcs11.so
+    - YubiKey (piv): /usr/lib/libykcs11.so
+    - SoftHSM (testing): /usr/lib/softhsm/libsofthsm2.so
+
+    Args:
+        provider: Path to the PKCS#11 shared library
+        pin: Optional PIN for token access (prompted if not provided)
+        token_label: Filter by token label (useful with multiple tokens)
+        token_serial: Filter by token serial number
+        key_label: Filter by key label on the token
+        key_id: Filter by key ID (hex string or bytes)
+
+    Returns:
+        AuthConfig for PKCS#11 authentication
+
+    Example:
+        # YubiKey PIV authentication
+        config = create_pkcs11_auth(
+            provider="/usr/lib/libykcs11.so",
+            pin="123456",
+        )
+
+        # OpenSC smart card with specific key
+        config = create_pkcs11_auth(
+            provider="/usr/lib/opensc-pkcs11.so",
+            key_label="SSH Key",
+        )
+    """
+    return AuthConfig(
+        method=AuthMethod.PKCS11,
+        pkcs11_provider=provider,
+        pkcs11_pin=pin,
+        pkcs11_token_label=token_label,
+        pkcs11_token_serial=token_serial,
+        pkcs11_key_label=key_label,
+        pkcs11_key_id=key_id,
+    )
 
