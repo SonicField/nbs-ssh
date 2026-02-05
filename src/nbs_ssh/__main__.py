@@ -128,6 +128,13 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "-J", "--proxy-jump",
+        metavar="HOST",
+        help="Jump host(s) for connection tunnelling (like ssh -J). "
+             "Use comma-separated hosts for chaining: host1,host2",
+    )
+
+    parser.add_argument(
         "--events",
         action="store_true",
         help="Print JSONL events to stderr",
@@ -243,6 +250,7 @@ async def run_command(args: argparse.Namespace) -> int:
             known_hosts=known_hosts,
             event_collector=event_collector,
             connect_timeout=args.timeout,
+            proxy_jump=getattr(args, 'proxy_jump', None),
         ) as conn:
             if args.command:
                 result = await conn.exec(args.command)

@@ -30,17 +30,20 @@ from nbs_ssh.auth import (
     check_agent_available,
     check_gssapi_available,
     create_agent_auth,
+    create_cert_auth,
     create_gssapi_auth,
     create_key_auth,
     create_keyboard_interactive_auth,
     create_password_auth,
     get_agent_keys,
+    load_certificate,
     load_private_key,
 )
 from nbs_ssh.errors import (
     AgentError,
     AuthenticationError,
     AuthFailed,
+    CertificateError,
     ConnectionRefused,
     ConnectionTimeout,
     DisconnectReason,
@@ -285,6 +288,7 @@ class SSHConnection:
         connect_timeout: float = 30.0,
         auth: AuthConfig | Sequence[AuthConfig] | None = None,
         keepalive: KeepaliveConfig | None = None,
+        proxy_jump: str | Sequence[str] | None = None,
     ) -> None:
         """
         Initialise SSH connection parameters.
@@ -301,6 +305,9 @@ class SSHConnection:
             connect_timeout: Connection timeout in seconds
             auth: AuthConfig or list of AuthConfigs to try in order
             keepalive: Optional KeepaliveConfig for connection keepalive
+            proxy_jump: Jump host(s) for connection tunnelling (like ssh -J).
+                        Can be a single host string "[user@]host[:port]",
+                        a comma-separated string of hosts, or a list of hosts.
         """
         # Preconditions
         assert host, "Host must be specified"
@@ -313,6 +320,9 @@ class SSHConnection:
         self._connect_timeout = connect_timeout
         self._keepalive = keepalive
         self._disconnect_reason = DisconnectReason.NORMAL
+
+        # Normalise proxy_jump to a comma-separated string for asyncssh
+        self._proxy_jump = self._normalise_proxy_jump(proxy_jump)
 
         # Build auth configs from either new or legacy interface
         self._auth_configs = self._build_auth_configs(auth, password, client_keys)
@@ -386,6 +396,34 @@ class SSHConnection:
 
         return configs
 
+    @staticmethod
+    def _normalise_proxy_jump(
+        proxy_jump: str | Sequence[str] | None,
+    ) -> str | None:
+        """
+        Normalise proxy_jump to asyncssh tunnel format.
+
+        AsyncSSH's tunnel parameter accepts a comma-separated string
+        of hosts in the format [user@]host[:port].
+
+        Args:
+            proxy_jump: None, a single host string, comma-separated hosts,
+                        or a sequence of host strings
+
+        Returns:
+            Comma-separated string of jump hosts, or None
+        """
+        if proxy_jump is None:
+            return None
+
+        if isinstance(proxy_jump, str):
+            # Already a string (possibly comma-separated)
+            return proxy_jump.strip() if proxy_jump.strip() else None
+
+        # Sequence of hosts - join with commas
+        hosts = [h.strip() for h in proxy_jump if h.strip()]
+        return ",".join(hosts) if hosts else None
+
     async def __aenter__(self) -> "SSHConnection":
         """Connect and authenticate."""
         await self._connect()
@@ -397,11 +435,15 @@ class SSHConnection:
 
     async def _connect(self) -> None:
         """Establish SSH connection with auth method fallback."""
-        connect_data = {
+        connect_data: dict[str, Any] = {
             "host": self._host,
             "port": self._port,
             "username": self._username,
         }
+
+        # Include proxy_jump in event data if configured
+        if self._proxy_jump is not None:
+            connect_data["proxy_jump"] = self._proxy_jump
 
         # Track connection timing
         self._timing.connect_start_ms = time.time() * 1000
@@ -509,6 +551,10 @@ class SSHConnection:
         if self._keepalive is not None:
             options.update(self._keepalive.to_asyncssh_options())
 
+        # Add proxy/tunnel if configured (ProxyJump support)
+        if self._proxy_jump is not None:
+            options["tunnel"] = self._proxy_jump
+
         if self._known_hosts is None:
             options["known_hosts"] = None
         else:
@@ -524,6 +570,11 @@ class SSHConnection:
             key = load_private_key(auth_config.key_path, auth_config.passphrase)
             options["client_keys"] = [key]
             options["password"] = None  # Disable password auth
+
+            # Load certificate if provided (CertificateFile support)
+            if auth_config.certificate_path is not None:
+                cert = load_certificate(auth_config.certificate_path)
+                options["client_certs"] = [cert]
 
         elif auth_config.method == AuthMethod.SSH_AGENT:
             # Get keys from agent
