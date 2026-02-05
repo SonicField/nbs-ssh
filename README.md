@@ -73,20 +73,70 @@ asyncio.run(main())
 
 ## Authentication
 
-nbs-ssh tries authentication methods in order:
+nbs-ssh automatically discovers authentication methods, matching OpenSSH behaviour:
 
-1. **SSH agent** (if `SSH_AUTH_SOCK` is set)
-2. **Default keys** (`~/.ssh/id_rsa`, `~/.ssh/id_ed25519`, etc.)
-3. **Password prompt** (only if nothing else works)
+1. **SSH agent** (if `SSH_AUTH_SOCK` environment variable is set)
+2. **Keys from SSH config** (`IdentityFile` entries in `~/.ssh/config` and `/etc/ssh/ssh_config`)
+3. **Default keys** (`~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, etc.)
+4. **Password prompt** (CLI only, if nothing else works)
 
-Explicit authentication:
+### SSH Agent
+
+The SSH agent is the preferred authentication method. nbs-ssh will use it automatically when `SSH_AUTH_SOCK` is set:
+
+```bash
+# Check if agent is available
+echo $SSH_AUTH_SOCK
+ssh-add -l
+
+# If empty, you may need to start an agent or ensure your shell inherits it
+```
+
+**Common issue:** Some environments (tmux, screen, cron, subprocess spawning) don't inherit `SSH_AUTH_SOCK`. If authentication fails unexpectedly, check that the environment variable is set.
+
+### SSH Config Parsing
+
+nbs-ssh parses SSH config files just like OpenSSH:
+
+- `~/.ssh/config` (user config, checked first)
+- `/etc/ssh/ssh_config` (system config)
+
+The `IdentityFile` directive is supported, including token expansion:
+- `~` expands to home directory
+- `%u` expands to username
+
+### Explicit Authentication
+
+For programmatic control:
+
 ```python
-from nbs_ssh import SSHConnection, create_key_auth, create_password_auth
+from nbs_ssh import SSHConnection, create_key_auth, create_password_auth, create_agent_auth
 
+# Use specific key
 async with SSHConnection(
     host="example.com",
     username="user",
     auth=[create_key_auth("~/.ssh/my_key")],
+) as conn:
+    ...
+
+# Use agent explicitly
+async with SSHConnection(
+    host="example.com",
+    username="user",
+    auth=[create_agent_auth()],
+) as conn:
+    ...
+
+# Try multiple methods in order
+async with SSHConnection(
+    host="example.com",
+    username="user",
+    auth=[
+        create_agent_auth(),
+        create_key_auth("~/.ssh/backup_key"),
+        create_password_auth("secret"),
+    ],
 ) as conn:
     ...
 ```
@@ -116,7 +166,7 @@ PYTHONPATH=src pytest tests/test_connection.py -v
 
 - **MockSSHServer**: A real AsyncSSH server that binds to port 0 for parallel test execution
 - **Falsifiable security tests**: Tests that actively attempt attacks (weak ciphers, downgrade attacks) and verify they fail
-- **No Docker dependency**: All 261 tests run against MockSSHServer
+- **No Docker dependency**: All 275 tests run against MockSSHServer
 - **Real command execution**: MockSSHServer can execute actual shell commands when needed
 
 See [Testing Guide](docs/testing.md) for the full testing philosophy and how to write tests.
