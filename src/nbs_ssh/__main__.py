@@ -8,6 +8,7 @@ Usage:
     python -m nbs_ssh -i keyfile user@host command
     python -m nbs_ssh --password user@host command
     python -m nbs_ssh --keyboard-interactive user@host command
+    python -m nbs_ssh -I /usr/lib/opensc-pkcs11.so user@host command  # PKCS#11
     python -m nbs_ssh --events user@host command
     python -m nbs_ssh --help
 """
@@ -128,6 +129,20 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "-I", "--pkcs11-provider",
+        metavar="LIB",
+        help="PKCS#11 shared library for smart card/HSM authentication "
+             "(e.g., /usr/lib/opensc-pkcs11.so, /usr/lib/libykcs11.so)",
+    )
+
+    parser.add_argument(
+        "-J", "--proxy-jump",
+        metavar="HOST",
+        help="Jump host(s) for connection tunnelling (like ssh -J). "
+             "Use comma-separated hosts for chaining: host1,host2",
+    )
+
+    parser.add_argument(
         "--events",
         action="store_true",
         help="Print JSONL events to stderr",
@@ -168,11 +183,13 @@ async def run_command(args: argparse.Namespace) -> int:
     from nbs_ssh import (
         SSHConnection,
         check_gssapi_available,
+        check_pkcs11_available,
         create_agent_auth,
         create_gssapi_auth,
         create_key_auth,
         create_keyboard_interactive_auth,
         create_password_auth,
+        create_pkcs11_auth,
         get_agent_available,
         get_default_key_paths,
     )
@@ -204,6 +221,24 @@ async def run_command(args: argparse.Namespace) -> int:
         # Use keyboard-interactive with CLI callback for prompts
         auth_configs.append(
             create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
+        )
+
+    if getattr(args, 'pkcs11_provider', None):
+        # PKCS#11 smart card/hardware token authentication
+        if not check_pkcs11_available():
+            print(
+                "Error: PKCS#11 support not available. Install python-pkcs11: "
+                "pip install python-pkcs11",
+                file=sys.stderr,
+            )
+            return 1
+        # Prompt for PIN if not provided
+        pin = getpass.getpass("PKCS#11 PIN (or press Enter for no PIN): ")
+        auth_configs.append(
+            create_pkcs11_auth(
+                provider=args.pkcs11_provider,
+                pin=pin if pin else None,
+            )
         )
 
     # If no explicit auth, try GSSAPI, agent, default keys, then password
@@ -243,6 +278,7 @@ async def run_command(args: argparse.Namespace) -> int:
             known_hosts=known_hosts,
             event_collector=event_collector,
             connect_timeout=args.timeout,
+            proxy_jump=getattr(args, 'proxy_jump', None),
         ) as conn:
             if args.command:
                 result = await conn.exec(args.command)
