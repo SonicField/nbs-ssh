@@ -57,10 +57,60 @@ Full documentation covering:
 
 ## Status
 
-State: pending
-Started:
-Completed:
+State: completed
+Started: 2026-02-04T12:00:00Z
+Completed: 2026-02-04T12:30:00Z
 
 ## Log
 
-[Worker will append findings here]
+### 2026-02-04
+
+**Exploration**: Explored codebase to understand all public APIs, including:
+- SSHConnection and SSHSupervisor classes
+- Authentication system (AuthConfig, AuthMethod, helper functions)
+- Port forwarding (ForwardManager, ForwardIntent, ForwardHandle)
+- Automation engine (expect/respond patterns, transcripts)
+- Evidence bundles and JSONL event system
+- Error taxonomy (SSHError hierarchy)
+- CLI interface
+
+**Documentation Created**:
+
+1. **docs/getting-started.md** (~130 lines)
+   - Installation from source
+   - Quick start with key and password auth
+   - CLI usage examples
+   - Streaming output example
+   - Error handling basics
+   - Links to further documentation
+
+2. **docs/user-guide.md** (~600 lines)
+   - SSHConnection: all constructor options, exec(), stream_exec()
+   - Authentication: password, key, agent, multiple methods with fallback
+   - SSHSupervisor: states, retry policy, wait_connected()
+   - Port forwarding: local, remote, dynamic with auto-replay
+   - Automation: expect/respond patterns, sequences, transcripts
+   - Evidence bundles: capturing, contents, export formats, redaction
+   - Event system: types, collection, JSONL logging
+   - Error handling: full exception hierarchy with examples
+   - Cross-platform: key discovery, path utilities
+
+3. **docs/debugging.md** (~350 lines)
+   - Enabling JSONL event logging (code and CLI)
+   - Reading event logs with jq and programmatically
+   - Event types reference with JSON examples
+   - Evidence bundle analysis
+   - Common issues: ConnectionRefused, Timeout, AuthFailed, KeyLoadError, HostKeyMismatch, NoMutualKex, AgentError
+   - Bug reporting checklist
+   - Debug checklist
+
+4. **docs/api-reference.md** (~700 lines)
+   - All public classes with full constructor parameters
+   - Method signatures with parameter tables
+   - Example usage for each major feature
+   - Complete module import list
+
+**Verification**:
+- Documentation verified against actual code implementation
+- Examples based on real API patterns found in codebase
+- All features from task requirements covered
