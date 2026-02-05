@@ -48,6 +48,7 @@ class MockServerConfig:
     Attributes:
         username: Username to accept (default: "test")
         password: Password to accept (default: "test")
+        authorized_keys: List of public keys (SSHKey objects or OpenSSH format strings)
         host_key_path: Path to host key (auto-generated if None)
         delay_auth: Delay in seconds before auth response
         delay_channel: Delay in seconds before channel open
@@ -67,6 +68,7 @@ class MockServerConfig:
     """
     username: str = "test"
     password: str = "test"
+    authorized_keys: list[SSHKey | str] = field(default_factory=list)
     host_key_path: Path | None = None
 
     # Timing behaviours
@@ -212,8 +214,60 @@ class MockSSHServerProtocol(asyncssh.SSHServer):
         return valid
 
     def public_key_auth_supported(self) -> bool:
-        """Indicate that public key auth is supported (for future use)."""
-        return False  # Not implemented yet
+        """Indicate that public key auth is supported when authorized_keys configured."""
+        return len(self._config.authorized_keys) > 0
+
+    async def validate_public_key(self, username: str, key: SSHKey) -> bool:
+        """
+        Validate public key authentication.
+
+        Checks the presented key against the list of authorized keys in config.
+        """
+        # Apply delay if configured
+        if self._config.delay_auth > 0:
+            await asyncio.sleep(self._config.delay_auth)
+
+        # Check username first
+        if username != self._config.username:
+            self._emitter.emit(
+                "SERVER_AUTH",
+                username=username,
+                method="publickey",
+                success=False,
+                reason="invalid_username",
+            )
+            return False
+
+        # Check key against authorized keys
+        for authorized_key in self._config.authorized_keys:
+            # Convert string to SSHKey if needed
+            if isinstance(authorized_key, str):
+                try:
+                    auth_key = asyncssh.import_public_key(authorized_key)
+                except asyncssh.KeyImportError:
+                    continue
+            else:
+                auth_key = authorized_key
+
+            # Compare keys by their public key data
+            if key.export_public_key() == auth_key.export_public_key():
+                self._emitter.emit(
+                    "SERVER_AUTH",
+                    username=username,
+                    method="publickey",
+                    success=True,
+                    reason="key_match",
+                )
+                return True
+
+        self._emitter.emit(
+            "SERVER_AUTH",
+            username=username,
+            method="publickey",
+            success=False,
+            reason="key_not_authorized",
+        )
+        return False
 
 
 async def handle_mock_process(

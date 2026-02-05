@@ -94,20 +94,56 @@ async def test_connect_and_echo(
 
 
 @pytest.mark.asyncio
-async def test_connect_with_key(event_collector) -> None:
+async def test_connect_with_key(event_collector, tmp_path) -> None:
     """
     Connect using SSH key authentication.
 
-    Validates key-based auth works alongside password auth.
-
-    NOTE: This test is skipped because MockSSHServer doesn't support key
-    authentication yet. Implementation tracked as a future enhancement.
-    To enable: Add key_auth support to MockServerConfig and MockSSHServer.
+    Validates key-based auth works with MockSSHServer.
     """
-    pytest.skip(
-        "MockSSHServer doesn't support key authentication - "
-        "requires implementation of key auth in mock server"
+    import asyncssh
+
+    from nbs_ssh.connection import SSHConnection
+    from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+    # Generate a test keypair
+    private_key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
+    public_key = private_key.export_public_key().decode("utf-8")
+
+    # Write private key to temp file for SSHConnection to load
+    key_path = tmp_path / "test_key"
+    key_path.write_bytes(private_key.export_private_key())
+    key_path.chmod(0o600)  # SSH requires restricted permissions
+
+    # Configure mock server with the public key
+    config = MockServerConfig(
+        username="test",
+        password="test",  # Password still set but won't be used
+        authorized_keys=[public_key],
     )
+
+    async with MockSSHServer(config) as server:
+        async with SSHConnection(
+            host="localhost",
+            port=server.port,
+            username="test",
+            client_keys=[key_path],
+            known_hosts=None,
+            event_collector=event_collector,
+        ) as conn:
+            result = await conn.exec("echo hello")
+
+            # Postcondition: Command succeeded
+            assert result.exit_code == 0, f"Command failed: {result.stderr}"
+            assert result.stdout.strip() == "hello"
+
+    # Verify AUTH event shows success
+    auth_events = [e for e in event_collector.events if e.event_type == "AUTH"]
+    assert len(auth_events) >= 1, "Should have AUTH event"
+    # Check we have a successful auth
+    assert any(e.data.get("status") == "success" for e in auth_events), "Auth should succeed"
+    # Verify key auth method was used
+    assert any(e.data.get("method") == "private_key" for e in auth_events), \
+        "Should use private_key auth method"
 
 
 @pytest.mark.asyncio
