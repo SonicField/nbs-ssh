@@ -69,6 +69,7 @@ from nbs_ssh.platform import (
     is_windows,
     validate_path,
 )
+from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
 from nbs_ssh.supervisor import ConnectionState, RetryPolicy, SSHSupervisor
 
 __all__ = [
@@ -128,6 +129,9 @@ __all__ = [
     # Keepalive
     "KeepaliveConfig",
     "ProgressWatchdog",
+    # Proxy
+    "ProxyCommandError",
+    "ProxyCommandProcess",
     # Supervisor
     "ConnectionState",
     "RetryPolicy",

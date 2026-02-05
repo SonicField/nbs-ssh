@@ -63,6 +63,7 @@ from nbs_ssh.evidence import AlgorithmInfo, EvidenceBundle, HostInfo, TimingInfo
 from nbs_ssh.config import SSHConfig, SSHHostConfig
 from nbs_ssh.keepalive import KeepaliveConfig
 from nbs_ssh.platform import get_default_key_paths
+from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
 
 
 # Re-export for backwards compatibility
@@ -293,6 +294,7 @@ class SSHConnection:
         auth: AuthConfig | Sequence[AuthConfig] | None = None,
         keepalive: KeepaliveConfig | None = None,
         proxy_jump: str | Sequence[str] | None = None,
+        proxy_command: str | None = None,
         use_ssh_config: bool = True,
         ssh_config: SSHConfig | None = None,
     ) -> None:
@@ -314,6 +316,9 @@ class SSHConnection:
             proxy_jump: Jump host(s) for connection tunnelling (like ssh -J).
                         Can be a single host string "[user@]host[:port]",
                         a comma-separated string of hosts, or a list of hosts.
+            proxy_command: Command whose stdin/stdout becomes the SSH transport
+                           (like ssh -o ProxyCommand=...). Tokens (%h, %p) should
+                           already be expanded. Takes precedence over proxy_jump.
             use_ssh_config: Whether to read ~/.ssh/config and /etc/ssh/ssh_config
             ssh_config: Pre-loaded SSHConfig object (if None, loads default configs)
         """
@@ -346,8 +351,14 @@ class SSHConnection:
             if connect_timeout is None and self._host_config.connect_timeout is not None:
                 connect_timeout = float(self._host_config.connect_timeout)
 
+            # ProxyCommand from config if not specified
+            # ProxyCommand takes precedence over ProxyJump (matches OpenSSH)
+            if proxy_command is None and self._host_config.proxy_command:
+                proxy_command = self._host_config.proxy_command
+
             # ProxyJump from config if not specified
-            if proxy_jump is None and self._host_config.proxy_jump:
+            # Only use if ProxyCommand is not set (ProxyCommand takes precedence)
+            if proxy_command is None and proxy_jump is None and self._host_config.proxy_jump:
                 proxy_jump = self._host_config.proxy_jump
 
         # Apply defaults for parameters not set by config
@@ -366,8 +377,13 @@ class SSHConnection:
         self._keepalive = keepalive
         self._disconnect_reason = DisconnectReason.NORMAL
 
+        # ProxyCommand takes precedence over ProxyJump (matches OpenSSH)
+        self._proxy_command = proxy_command
+        self._proxy_process: ProxyCommandProcess | None = None
+
         # Normalise proxy_jump to a comma-separated string for asyncssh
-        self._proxy_jump = self._normalise_proxy_jump(proxy_jump)
+        # Only used if proxy_command is not set
+        self._proxy_jump = None if proxy_command else self._normalise_proxy_jump(proxy_jump)
 
         # Build auth configs from either new or legacy interface
         self._auth_configs = self._build_auth_configs(auth, password, client_keys)
@@ -490,6 +506,10 @@ class SSHConnection:
         if self._proxy_jump is not None:
             connect_data["proxy_jump"] = self._proxy_jump
 
+        # Include proxy_command in event data if configured
+        if self._proxy_command is not None:
+            connect_data["proxy_command"] = self._proxy_command
+
         # Track connection timing
         self._timing.connect_start_ms = time.time() * 1000
 
@@ -501,6 +521,22 @@ class SSHConnection:
             port=self._port,
             username=self._username,
         )
+
+        # Start ProxyCommand process if configured
+        if self._proxy_command is not None:
+            try:
+                self._proxy_process = ProxyCommandProcess(self._proxy_command)
+                await self._proxy_process.start()
+            except ProxyCommandError as e:
+                self._emitter.emit(
+                    EventType.ERROR,
+                    error_type="proxy_command_failed",
+                    message=str(e),
+                    command=e.command,
+                    exit_code=e.exit_code,
+                    **connect_data,
+                )
+                raise SSHConnectionError(str(e), context=error_ctx) from e
 
         # Try each auth method in order
         last_error: Exception | None = None
@@ -596,8 +632,11 @@ class SSHConnection:
         if self._keepalive is not None:
             options.update(self._keepalive.to_asyncssh_options())
 
+        # Add ProxyCommand socket if configured (takes precedence over ProxyJump)
+        if self._proxy_process is not None:
+            options["sock"] = self._proxy_process.get_socket()
         # Add proxy/tunnel if configured (ProxyJump support)
-        if self._proxy_jump is not None:
+        elif self._proxy_jump is not None:
             options["tunnel"] = self._proxy_jump
 
         if self._known_hosts is None:
@@ -732,6 +771,11 @@ class SSHConnection:
             self._conn.close()
             await self._conn.wait_closed()
             self._conn = None
+
+        # Close ProxyCommand process if active
+        if self._proxy_process is not None:
+            await self._proxy_process.close()
+            self._proxy_process = None
 
         self._emitter.close()
 

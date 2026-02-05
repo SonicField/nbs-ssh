@@ -143,6 +143,14 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "-o", "--proxy-command",
+        metavar="COMMAND",
+        help="Command whose stdin/stdout becomes the SSH transport "
+             "(like ssh -o ProxyCommand=...). Tokens %%h, %%p are expanded. "
+             "Takes precedence over --proxy-jump.",
+    )
+
+    parser.add_argument(
         "--events",
         action="store_true",
         help="Print JSONL events to stderr",
@@ -269,6 +277,14 @@ async def run_command(args: argparse.Namespace) -> int:
     event_collector = EventCollector() if args.events else None
     known_hosts = None if args.no_host_check else ()
 
+    # Expand tokens in proxy_command if provided
+    proxy_command = getattr(args, 'proxy_command', None)
+    if proxy_command:
+        # Expand %h and %p tokens
+        proxy_command = proxy_command.replace("%h", host)
+        proxy_command = proxy_command.replace("%p", str(args.port))
+        proxy_command = proxy_command.replace("%%", "%")
+
     try:
         async with SSHConnection(
             host=host,
@@ -279,6 +295,7 @@ async def run_command(args: argparse.Namespace) -> int:
             event_collector=event_collector,
             connect_timeout=args.timeout,
             proxy_jump=getattr(args, 'proxy_jump', None),
+            proxy_command=proxy_command,
         ) as conn:
             if args.command:
                 result = await conn.exec(args.command)
