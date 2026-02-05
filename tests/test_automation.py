@@ -752,18 +752,23 @@ async def test_automation_timeout_behaviour(
     streaming_ssh_server,
     event_collector,
 ) -> None:
-    """
-    AutomationEngine times out correctly on missing pattern.
+    """AutomationEngine times out correctly on missing pattern."""
+    from nbs_ssh import AutomationEngine, SSHConnection
+    from nbs_ssh.automation import ExpectTimeoutError
 
-    NOTE: This test is skipped due to a bug in StreamExecResult where
-    iteration ends prematurely when no data is available, preventing
-    the timeout from triggering. The unit test version (test_expect_timeout_raises)
-    validates the timeout behaviour using mock streams.
+    async with SSHConnection(
+        host="localhost",
+        port=streaming_ssh_server.port,
+        username="test",
+        password="test",
+        known_hosts=None,
+        event_collector=event_collector,
+    ) as conn:
+        # Run a command that outputs something but not what we're waiting for,
+        # and keeps running so we can timeout
+        stream = conn.stream_exec("echo 'not the pattern'; sleep 5")
+        engine = AutomationEngine(stream)
 
-    TODO: Fix StreamExecResult.__anext__ to continue waiting when process
-    is still running but no data is available yet.
-    """
-    pytest.skip(
-        "StreamExecResult prematurely ends iteration when no data available - "
-        "timeout behaviour validated by unit tests"
-    )
+        # Expect a pattern that won't appear, with a short timeout
+        with pytest.raises(ExpectTimeoutError):
+            await engine.expect("THIS_PATTERN_WILL_NEVER_APPEAR", timeout=0.5)

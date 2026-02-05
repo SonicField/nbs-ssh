@@ -143,7 +143,10 @@ class StreamExecResult:
             self._emit_exec_event()
             raise StopAsyncIteration
 
-        try:
+        # Loop until we have data to return or process completes
+        # Note: CancelledError is NOT caught here - it must propagate for
+        # asyncio.timeout() to work correctly
+        while True:
             # Create tasks for reading from stdout and stderr
             stdout_task = asyncio.create_task(
                 self._read_from_stream(self._process.stdout, "stdout")
@@ -153,11 +156,21 @@ class StreamExecResult:
             )
             wait_task = asyncio.create_task(self._process.wait())
 
-            # Wait for first available data
-            done, pending = await asyncio.wait(
-                {stdout_task, stderr_task, wait_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                # Wait for first available data
+                done, pending = await asyncio.wait(
+                    {stdout_task, stderr_task, wait_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                # Clean up tasks before propagating cancellation
+                for task in [stdout_task, stderr_task, wait_task]:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                raise  # Re-raise to allow asyncio.timeout() to work
 
             # Cancel pending tasks
             for task in pending:
@@ -167,11 +180,13 @@ class StreamExecResult:
                 except asyncio.CancelledError:
                     pass
 
-            # Check what completed
+            # Check stdout and stderr tasks for data (not wait_task!)
+            # wait_task.result() returns SSHCompletedProcess, not StreamEvent
             for task in done:
-                result = task.result()
-                if result is not None:
-                    return result
+                if task is not wait_task:
+                    result = task.result()
+                    if result is not None:
+                        return result
 
             # If wait_task completed, we're done
             if wait_task in done:
@@ -184,14 +199,7 @@ class StreamExecResult:
                     exit_code=self._exit_code,
                 )
 
-            # No data available but not done - shouldn't happen
-            raise StopAsyncIteration
-
-        except asyncio.CancelledError:
-            self._cancelled = True
-            self._done = True
-            self._emit_exec_event()
-            raise StopAsyncIteration
+            # No data available but process still running - continue waiting
 
     async def _read_from_stream(
         self,
