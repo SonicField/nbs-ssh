@@ -62,26 +62,140 @@ def get_config_path() -> Path:
     return get_ssh_dir() / "config"
 
 
+def get_system_config_path() -> Path:
+    """
+    Get the system-wide SSH config file path.
+
+    Returns:
+        Path to system SSH config file (/etc/ssh/ssh_config on Unix)
+    """
+    if is_windows():
+        # Windows OpenSSH uses ProgramData
+        program_data = os.environ.get("ProgramData", "C:\\ProgramData")
+        return Path(program_data) / "ssh" / "ssh_config"
+    else:
+        return Path("/etc/ssh/ssh_config")
+
+
+def parse_ssh_config_identity_files(
+    config_path: Path,
+    username: str | None = None,
+) -> list[Path]:
+    """
+    Parse an SSH config file and extract IdentityFile entries.
+
+    Parses IdentityFile directives from SSH config, expanding tokens:
+    - ~ expands to home directory
+    - %u expands to local username
+
+    Args:
+        config_path: Path to SSH config file
+        username: Username for %u expansion (defaults to current user)
+
+    Returns:
+        List of expanded identity file paths (existence not verified)
+    """
+    if not config_path.exists():
+        return []
+
+    if username is None:
+        import getpass
+        username = getpass.getuser()
+
+    identity_files: list[Path] = []
+
+    try:
+        with open(config_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith("#"):
+                    continue
+
+                # Parse IdentityFile directive (case-insensitive)
+                parts = line.split(None, 1)
+                if len(parts) == 2 and parts[0].lower() == "identityfile":
+                    path_str = parts[1]
+
+                    # Expand tokens
+                    path_str = path_str.replace("%u", username)
+
+                    # Expand ~ and environment variables
+                    expanded = expand_path(path_str)
+                    identity_files.append(expanded)
+    except (OSError, IOError):
+        # Config file not readable, skip silently
+        pass
+
+    return identity_files
+
+
+def get_config_identity_files(username: str | None = None) -> list[Path]:
+    """
+    Get IdentityFile paths from SSH config files.
+
+    Reads both user config (~/.ssh/config) and system config
+    (/etc/ssh/ssh_config), returning all IdentityFile entries.
+
+    Args:
+        username: Username for %u expansion (defaults to current user)
+
+    Returns:
+        List of identity file paths from config (user config first)
+    """
+    identity_files: list[Path] = []
+    seen: set[Path] = set()
+
+    # User config takes precedence
+    user_config = get_config_path()
+    for path in parse_ssh_config_identity_files(user_config, username):
+        if path not in seen:
+            identity_files.append(path)
+            seen.add(path)
+
+    # Then system config
+    system_config = get_system_config_path()
+    for path in parse_ssh_config_identity_files(system_config, username):
+        if path not in seen:
+            identity_files.append(path)
+            seen.add(path)
+
+    return identity_files
+
+
 def get_default_key_paths() -> list[Path]:
     """
     Get the default private key file paths.
 
-    Returns common key filenames in priority order:
-    - id_ed25519 (modern, preferred)
-    - id_rsa (legacy but common)
-    - id_ecdsa
-    - id_dsa (deprecated)
+    Includes:
+    1. Paths from SSH config files (IdentityFile directives)
+    2. Common key filenames in ~/.ssh/:
+       - id_ed25519 (modern, preferred)
+       - id_rsa (legacy but common)
+       - id_ecdsa
+       - id_dsa (deprecated)
 
     Returns:
-        List of paths to check for private keys
+        List of paths to check for private keys (config paths first)
     """
+    paths: list[Path] = []
+    seen: set[Path] = set()
+
+    # First: paths from SSH config files
+    for path in get_config_identity_files():
+        if path not in seen:
+            paths.append(path)
+            seen.add(path)
+
+    # Then: hardcoded defaults (if not already in config)
     ssh_dir = get_ssh_dir()
-    return [
-        ssh_dir / "id_ed25519",
-        ssh_dir / "id_rsa",
-        ssh_dir / "id_ecdsa",
-        ssh_dir / "id_dsa",
-    ]
+    for name in ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"]:
+        path = ssh_dir / name
+        if path not in seen:
+            paths.append(path)
+            seen.add(path)
+
+    return paths
 
 
 def expand_path(path: str | Path) -> Path:

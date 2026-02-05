@@ -122,11 +122,175 @@ class TestDefaultKeyPaths:
         assert "id_rsa" in names
 
     def test_get_default_key_paths_in_ssh_dir(self) -> None:
-        """All default key paths are in the SSH directory."""
+        """Hardcoded default key paths are in the SSH directory."""
         ssh_dir = get_ssh_dir()
-        result = get_default_key_paths()
-        for path in result:
-            assert path.parent == ssh_dir
+        # Mock config to return empty list (test hardcoded defaults only)
+        with patch("nbs_ssh.platform.get_config_identity_files", return_value=[]):
+            result = get_default_key_paths()
+            for path in result:
+                assert path.parent == ssh_dir
+
+
+# ---------------------------------------------------------------------------
+# SSH Config Parsing Tests
+# ---------------------------------------------------------------------------
+
+class TestSSHConfigParsing:
+    """Test parsing of SSH config files for IdentityFile entries."""
+
+    def test_parse_empty_config(self, tmp_path: Path) -> None:
+        """parse_ssh_config_identity_files() returns empty list for empty config."""
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        config = tmp_path / "config"
+        config.write_text("")
+
+        result = parse_ssh_config_identity_files(config)
+        assert result == []
+
+    def test_parse_config_with_identity_file(self, tmp_path: Path) -> None:
+        """parse_ssh_config_identity_files() extracts IdentityFile entries."""
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        config = tmp_path / "config"
+        config.write_text("IdentityFile ~/.ssh/my_key\n")
+
+        result = parse_ssh_config_identity_files(config)
+        assert len(result) == 1
+        assert result[0].name == "my_key"
+        assert ".ssh" in str(result[0])
+
+    def test_parse_config_multiple_identity_files(self, tmp_path: Path) -> None:
+        """parse_ssh_config_identity_files() extracts multiple entries."""
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        config = tmp_path / "config"
+        config.write_text(
+            "IdentityFile ~/.ssh/key1\n"
+            "IdentityFile ~/.ssh/key2\n"
+            "IdentityFile /absolute/path/key3\n"
+        )
+
+        result = parse_ssh_config_identity_files(config)
+        assert len(result) == 3
+        names = [p.name for p in result]
+        assert "key1" in names
+        assert "key2" in names
+        assert "key3" in names
+
+    def test_parse_config_case_insensitive(self, tmp_path: Path) -> None:
+        """parse_ssh_config_identity_files() is case-insensitive."""
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        config = tmp_path / "config"
+        config.write_text("identityfile ~/.ssh/lower\nIDENTITYFILE ~/.ssh/upper\n")
+
+        result = parse_ssh_config_identity_files(config)
+        assert len(result) == 2
+
+    def test_parse_config_skips_comments(self, tmp_path: Path) -> None:
+        """parse_ssh_config_identity_files() skips comment lines."""
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        config = tmp_path / "config"
+        config.write_text(
+            "# IdentityFile ~/.ssh/commented\n"
+            "IdentityFile ~/.ssh/real\n"
+        )
+
+        result = parse_ssh_config_identity_files(config)
+        assert len(result) == 1
+        assert result[0].name == "real"
+
+    def test_parse_config_expands_username_token(self, tmp_path: Path) -> None:
+        """parse_ssh_config_identity_files() expands %u to username."""
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        config = tmp_path / "config"
+        config.write_text("IdentityFile /var/keys/%u/id_rsa\n")
+
+        result = parse_ssh_config_identity_files(config, username="testuser")
+        assert len(result) == 1
+        assert "testuser" in str(result[0])
+        assert "%u" not in str(result[0])
+
+    def test_parse_nonexistent_config(self, tmp_path: Path) -> None:
+        """parse_ssh_config_identity_files() returns empty for nonexistent file."""
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        config = tmp_path / "nonexistent"
+        result = parse_ssh_config_identity_files(config)
+        assert result == []
+
+    def test_get_config_identity_files_deduplicates(self, tmp_path: Path, monkeypatch) -> None:
+        """get_config_identity_files() removes duplicate paths."""
+        # Import the real function (autouse fixture mocks it)
+        import nbs_ssh.platform as platform_module
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        # Restore the real get_config_identity_files for this test
+        def real_get_config_identity_files(username=None):
+            identity_files = []
+            seen = set()
+            for path in parse_ssh_config_identity_files(platform_module.get_config_path(), username):
+                if path not in seen:
+                    identity_files.append(path)
+                    seen.add(path)
+            for path in parse_ssh_config_identity_files(platform_module.get_system_config_path(), username):
+                if path not in seen:
+                    identity_files.append(path)
+                    seen.add(path)
+            return identity_files
+
+        monkeypatch.setattr("nbs_ssh.platform.get_config_identity_files", real_get_config_identity_files)
+
+        user_config = tmp_path / "user_config"
+        system_config = tmp_path / "system_config"
+
+        # Same path in both configs
+        user_config.write_text("IdentityFile ~/.ssh/shared_key\n")
+        system_config.write_text("IdentityFile ~/.ssh/shared_key\n")
+
+        with patch("nbs_ssh.platform.get_config_path", return_value=user_config):
+            with patch("nbs_ssh.platform.get_system_config_path", return_value=system_config):
+                result = real_get_config_identity_files()
+
+        # Should only appear once
+        names = [p.name for p in result]
+        assert names.count("shared_key") == 1
+
+    def test_get_default_key_paths_includes_config_paths(self, tmp_path: Path, monkeypatch) -> None:
+        """get_default_key_paths() includes paths from SSH config."""
+        # Import the real function
+        import nbs_ssh.platform as platform_module
+        from nbs_ssh.platform import parse_ssh_config_identity_files
+
+        # Restore the real get_config_identity_files for this test
+        def real_get_config_identity_files(username=None):
+            identity_files = []
+            seen = set()
+            for path in parse_ssh_config_identity_files(platform_module.get_config_path(), username):
+                if path not in seen:
+                    identity_files.append(path)
+                    seen.add(path)
+            for path in parse_ssh_config_identity_files(platform_module.get_system_config_path(), username):
+                if path not in seen:
+                    identity_files.append(path)
+                    seen.add(path)
+            return identity_files
+
+        monkeypatch.setattr("nbs_ssh.platform.get_config_identity_files", real_get_config_identity_files)
+
+        config = tmp_path / "config"
+        config.write_text("IdentityFile /custom/location/special_key\n")
+
+        with patch("nbs_ssh.platform.get_config_path", return_value=config):
+            with patch("nbs_ssh.platform.get_system_config_path", return_value=tmp_path / "none"):
+                result = get_default_key_paths()
+
+        # Should include our custom path
+        paths_str = [str(p) for p in result]
+        assert any("special_key" in p for p in paths_str)
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +433,8 @@ class TestKeyDiscovery:
         id_ed25519.write_text("fake ed25519 key")
 
         with patch("nbs_ssh.platform.get_ssh_dir", return_value=ssh_dir):
-            result = discover_keys()
+            with patch("nbs_ssh.platform.get_config_identity_files", return_value=[]):
+                result = discover_keys()
 
         assert len(result) == 2
         assert id_rsa in result
@@ -286,7 +451,8 @@ class TestKeyDiscovery:
 
         try:
             with patch("nbs_ssh.platform.get_ssh_dir", return_value=ssh_dir):
-                result = discover_keys()
+                with patch("nbs_ssh.platform.get_config_identity_files", return_value=[]):
+                    result = discover_keys()
 
             assert id_rsa not in result
         finally:

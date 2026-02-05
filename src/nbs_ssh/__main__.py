@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import os
 import sys
 from pathlib import Path
 
@@ -131,7 +132,6 @@ async def run_command(args: argparse.Namespace) -> int:
 
     if not username:
         # Default to current user
-        import os
         username = os.environ.get("USER", os.environ.get("USERNAME", "root"))
 
     # Build auth config
@@ -154,9 +154,9 @@ async def run_command(args: argparse.Namespace) -> int:
         if get_agent_available():
             auth_configs.append(create_agent_auth())
 
-        # Try default key paths
+        # Try default key paths (only if readable)
         for key_path in get_default_key_paths():
-            if key_path.exists():
+            if key_path.exists() and os.access(key_path, os.R_OK):
                 auth_configs.append(create_key_auth(key_path))
 
         # If still nothing, fall back to password

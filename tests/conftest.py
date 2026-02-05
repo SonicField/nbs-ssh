@@ -125,6 +125,26 @@ async def streaming_ssh_server() -> AsyncGenerator["MockSSHServer", None]:
         yield server
 
 
+@pytest.fixture(autouse=True)
+def isolate_ssh_config(monkeypatch):
+    """
+    Auto-use fixture that isolates tests from real SSH config files.
+
+    This prevents tests from picking up IdentityFile entries from
+    /etc/ssh/ssh_config which may point to files that aren't readable
+    in the test environment (e.g., due to BpfJailer restrictions).
+    """
+    from pathlib import Path
+
+    def empty_config_identity_files(username=None):
+        return []
+
+    monkeypatch.setattr(
+        "nbs_ssh.platform.get_config_identity_files",
+        empty_config_identity_files,
+    )
+
+
 @pytest.fixture
 def ssh_server(mock_ssh_server: "MockSSHServer") -> SSHServerInfo:
     """

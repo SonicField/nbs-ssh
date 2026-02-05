@@ -370,7 +370,8 @@ class SSHConnection:
             configs.append(create_agent_auth())
 
         for key_path in get_default_key_paths():
-            if key_path.exists():
+            # Check both existence and readability
+            if key_path.exists() and os.access(key_path, os.R_OK):
                 configs.append(create_key_auth(key_path))
 
         return configs
@@ -432,7 +433,7 @@ class SSHConnection:
                 )
                 break
 
-            except (AuthenticationError, asyncssh.PermissionDenied) as e:
+            except (AuthenticationError, KeyLoadError, asyncssh.PermissionDenied) as e:
                 auth_duration_ms = (time.time() * 1000) - auth_start_ms
                 last_error = e
 
