@@ -44,3 +44,6 @@ docker/*.log
 # OS
 .DS_Store
 Thumbs.db
+
+# NBS development artefacts
+.nbs/

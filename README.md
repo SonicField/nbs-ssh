@@ -1,37 +1,112 @@
 # nbs-ssh
 
-AI-inspectable SSH client library built on AsyncSSH.
+AI-inspectable SSH client library and CLI built on AsyncSSH.
 
 ## Features
 
-- **exec**: Run command, return {stdout, stderr, exit_status, timings}
-- **stream_exec**: Stream output events with cancellation support
+- **Interactive shell**: Full PTY support, just like `ssh`
+- **Command execution**: Run commands, get structured results
+- **Streaming output**: Async iterator for real-time output
 - **Port forwarding**: Local (-L), remote (-R), dynamic SOCKS (-D)
-- **Supervisor runtime**: Liveness metrics, freeze detection, reconnection
-- **Automated interaction**: Expect/respond without terminal emulation
-- **Evidence-first**: JSONL event logs, reproducible failure bundles
+- **Supervisor runtime**: Liveness metrics, freeze detection, auto-reconnection
+- **Automated interaction**: Expect/respond patterns without terminal emulation
+- **Evidence-first diagnostics**: JSONL event logs, reproducible failure bundles
+- **Pure-Python testing**: MockSSHServer for testing without Docker
 
 ## Installation
 
 ```bash
+git clone https://github.com/SonicField/nbs-ssh.git
+cd nbs-ssh
+python3 -m venv venv
 source venv/bin/activate
 pip install -e .
 ```
 
+## CLI Usage
+
+```bash
+# Interactive shell (like ssh)
+python -m nbs_ssh user@host
+
+# Execute command
+python -m nbs_ssh user@host "echo hello"
+
+# With options
+python -m nbs_ssh -p 2222 user@host              # Custom port
+python -m nbs_ssh -i ~/.ssh/id_ed25519 user@host # Specific key
+python -m nbs_ssh --events user@host "cmd"       # JSONL event logging
+```
+
+Add to your shell for convenience:
+```bash
+# In ~/.bashrc or ~/.zshrc
+py-ssh() {
+  PYTHONPATH=~/path/to/nbs-ssh/src ~/path/to/nbs-ssh/venv/bin/python -m nbs_ssh "$@"
+}
+```
+
+## Library Usage
+
+```python
+import asyncio
+from nbs_ssh import SSHConnection
+
+async def main():
+    async with SSHConnection(
+        host="example.com",
+        username="user",
+        known_hosts=None,  # Or path to known_hosts
+    ) as conn:
+        # Simple command execution
+        result = await conn.exec("echo hello")
+        print(result.stdout)  # "hello\n"
+        print(result.exit_code)  # 0
+
+        # Streaming output
+        async for event in await conn.stream_exec("long-running-command"):
+            if event.stream == "stdout":
+                print(event.data, end="")
+
+asyncio.run(main())
+```
+
+## Authentication
+
+nbs-ssh tries authentication methods in order:
+
+1. **SSH agent** (if `SSH_AUTH_SOCK` is set)
+2. **Default keys** (`~/.ssh/id_rsa`, `~/.ssh/id_ed25519`, etc.)
+3. **Password prompt** (only if nothing else works)
+
+Explicit authentication:
+```python
+from nbs_ssh import SSHConnection, create_key_auth, create_password_auth
+
+async with SSHConnection(
+    host="example.com",
+    username="user",
+    auth=[create_key_auth("~/.ssh/my_key")],
+) as conn:
+    ...
+```
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md)
+- [User Guide](docs/user-guide.md)
+- [Debugging Guide](docs/debugging.md)
+- [API Reference](docs/api-reference.md)
+
 ## Development
 
 ```bash
-# Run tests
-pytest tests/
+# Run tests (no Docker required)
+source venv/bin/activate
+PYTHONPATH=src pytest tests/ -v
 
-# Run with Docker SSH server
-docker-compose up -d
-pytest tests/ --ssh-host=localhost --ssh-port=2222
+# Tests use MockSSHServer - a pure-Python SSH server for testing
 ```
-
-## Architecture
-
-See `.nbs/plan.md` for the full architecture and slice plan.
 
 ## Licence
 
