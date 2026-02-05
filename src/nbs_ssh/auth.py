@@ -18,6 +18,7 @@ import asyncssh
 
 from nbs_ssh.errors import AgentError, CertificateError, ErrorContext, KeyLoadError
 from nbs_ssh.platform import expand_path, get_agent_available, get_openssh_agent_available
+from nbs_ssh.secure_string import SecureString
 
 
 class AuthMethod(str, Enum):
@@ -45,9 +46,22 @@ class AuthConfig:
     - PKCS#11 smart card/hardware token authentication
     - FIDO2/U2F security key authentication (YubiKey, etc.)
 
+    SecureString Support:
+        For enhanced security, password and passphrase fields accept SecureString
+        objects. SecureString stores secrets in ctypes-controlled memory that can
+        be explicitly eradicated (overwritten with random bytes) when no longer
+        needed.
+
     Usage:
         # Password auth
         config = AuthConfig(method=AuthMethod.PASSWORD, password="secret")
+
+        # Password auth with SecureString (recommended for sensitive environments)
+        from nbs_ssh import SecureString
+        password = SecureString(getpass.getpass())
+        config = AuthConfig(method=AuthMethod.PASSWORD, password=password)
+        # ... after use ...
+        password.eradicate()  # Overwrites memory with random bytes
 
         # Key auth
         config = AuthConfig(
@@ -97,9 +111,9 @@ class AuthConfig:
         ]
     """
     method: AuthMethod
-    password: str | None = None
+    password: str | SecureString | None = None
     key_path: Path | str | None = None
-    passphrase: str | None = None
+    passphrase: str | SecureString | None = None
     # Callback for keyboard-interactive: (name, instructions, prompts) -> responses
     # prompts is list of (prompt_text, echo_enabled) tuples
     # Should return list of responses matching prompts
@@ -108,7 +122,7 @@ class AuthConfig:
     ] | None = None
     # PKCS#11 options
     pkcs11_provider: str | None = None  # Path to PKCS#11 shared library
-    pkcs11_pin: str | None = None  # PIN for token access
+    pkcs11_pin: str | SecureString | None = None  # PIN for token access
     pkcs11_token_label: str | None = None  # Optional token label filter
     pkcs11_token_serial: str | bytes | None = None  # Optional token serial filter
     pkcs11_key_label: str | None = None  # Optional key label filter
@@ -116,7 +130,7 @@ class AuthConfig:
     # Certificate authentication (pairs with key_path for PRIVATE_KEY method)
     certificate_path: Path | str | None = None  # Path to SSH certificate file
     # FIDO2/U2F security key options
-    security_key_pin: str | None = None  # PIN for FIDO2 resident key access
+    security_key_pin: str | SecureString | None = None  # PIN for FIDO2 resident key access
     security_key_application: str = "ssh:"  # Application name (usually "ssh:")
     security_key_user: str | None = None  # Optional user filter for resident keys
     security_key_touch_required: bool = True  # Require user touch for each auth

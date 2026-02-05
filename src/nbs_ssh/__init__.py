@@ -75,6 +75,7 @@ from nbs_ssh.platform import (
     validate_path,
 )
 from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
+from nbs_ssh.secure_string import SecureString, SecureStringEradicated
 from nbs_ssh.supervisor import ConnectionState, RetryPolicy, SSHSupervisor
 
 __all__ = [
@@ -169,4 +170,7 @@ __all__ = [
     "get_pageant_available",
     "get_openssh_agent_available",
     "get_agent_available",
+    # SecureString
+    "SecureString",
+    "SecureStringEradicated",
 ]
