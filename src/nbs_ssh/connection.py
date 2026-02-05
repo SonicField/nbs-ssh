@@ -32,6 +32,7 @@ from nbs_ssh.auth import (
     create_agent_auth,
     create_gssapi_auth,
     create_key_auth,
+    create_keyboard_interactive_auth,
     create_password_auth,
     get_agent_keys,
     load_private_key,
@@ -540,6 +541,22 @@ class SSHConnection:
             options["client_keys"] = []  # Disable key auth
             options["password"] = None  # Disable password auth
 
+        elif auth_config.method == AuthMethod.KEYBOARD_INTERACTIVE:
+            # Keyboard-interactive authentication (2FA, challenge-response)
+            # Store the auth config for use by the client class
+            self._current_kbdint_config = auth_config
+            options["client_keys"] = []  # Disable key auth
+            options["password"] = None  # Disable password auth
+            # Use preferred_auth to request keyboard-interactive
+            options["preferred_auth"] = ["keyboard-interactive"]
+
+            # Create client factory for keyboard-interactive handling
+            def create_client() -> "_KbdintSSHClient":
+                return _KbdintSSHClient(auth_config)
+
+            self._conn = await asyncssh.connect(client_factory=create_client, **options)
+            return  # Exit early, connection already made
+
         self._conn = await asyncssh.connect(**options)
 
     def _map_exception(
@@ -943,4 +960,69 @@ class _StreamExecResultFactory:
         """Cancel the running command."""
         if self._stream_result is not None:
             await self._stream_result.cancel()
+
+
+class _KbdintSSHClient(asyncssh.SSHClient):
+    """
+    SSH client that handles keyboard-interactive authentication.
+
+    This client class is used when keyboard-interactive auth is requested.
+    It responds to challenges either using:
+    - A stored password (for simple password-like prompts)
+    - A callback function (for custom/2FA prompts)
+    """
+
+    def __init__(self, auth_config: AuthConfig) -> None:
+        """
+        Initialise with authentication configuration.
+
+        Args:
+            auth_config: AuthConfig with password and/or kbdint_response_callback
+        """
+        super().__init__()
+        self._auth_config = auth_config
+        self._challenge_count = 0
+
+    def kbdint_auth_requested(self) -> str | None:
+        """
+        Called when server requests keyboard-interactive auth.
+
+        Returns:
+            Submethods string (empty string for default) or None to cancel.
+        """
+        return ""  # Accept all keyboard-interactive submethods
+
+    def kbdint_challenge_received(
+        self,
+        name: str,
+        instructions: str,
+        lang: str,
+        prompts: list[tuple[str, bool]],
+    ) -> list[str] | None:
+        """
+        Called when server sends a keyboard-interactive challenge.
+
+        Args:
+            name: Challenge name (may be empty)
+            instructions: Instructions to display (may be empty)
+            lang: Language tag (usually empty)
+            prompts: List of (prompt_text, echo_enabled) tuples
+
+        Returns:
+            List of responses matching prompts, or None to cancel.
+        """
+        self._challenge_count += 1
+
+        # If callback is provided, use it
+        if self._auth_config.kbdint_response_callback is not None:
+            return self._auth_config.kbdint_response_callback(
+                name, instructions, prompts
+            )
+
+        # Otherwise, use password for all prompts
+        if self._auth_config.password is not None:
+            return [self._auth_config.password] * len(prompts)
+
+        # No way to respond - cancel auth
+        return None
 

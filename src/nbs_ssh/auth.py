@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import asyncssh
 
@@ -26,6 +26,7 @@ class AuthMethod(str, Enum):
     PRIVATE_KEY = "private_key"
     SSH_AGENT = "ssh_agent"
     GSSAPI = "gssapi"
+    KEYBOARD_INTERACTIVE = "keyboard_interactive"
 
 
 @dataclass
@@ -37,6 +38,8 @@ class AuthConfig:
     - Password authentication
     - Private key authentication (with optional passphrase)
     - SSH agent authentication
+    - GSSAPI/Kerberos authentication
+    - Keyboard-interactive authentication (2FA, challenge-response)
 
     Usage:
         # Password auth
@@ -51,6 +54,18 @@ class AuthConfig:
         # Agent auth
         config = AuthConfig(method=AuthMethod.SSH_AGENT)
 
+        # Keyboard-interactive auth (with password for auto-response)
+        config = AuthConfig(
+            method=AuthMethod.KEYBOARD_INTERACTIVE,
+            password="secret",  # Used for auto-response
+        )
+
+        # Keyboard-interactive auth (with callback for prompts)
+        config = AuthConfig(
+            method=AuthMethod.KEYBOARD_INTERACTIVE,
+            kbdint_response_callback=my_prompt_callback,
+        )
+
         # Multiple methods (fallback)
         configs = [
             AuthConfig(method=AuthMethod.SSH_AGENT),
@@ -62,6 +77,12 @@ class AuthConfig:
     password: str | None = None
     key_path: Path | str | None = None
     passphrase: str | None = None
+    # Callback for keyboard-interactive: (name, instructions, prompts) -> responses
+    # prompts is list of (prompt_text, echo_enabled) tuples
+    # Should return list of responses matching prompts
+    kbdint_response_callback: Callable[
+        [str, str, list[tuple[str, bool]]], list[str]
+    ] | None = None
 
     def __post_init__(self) -> None:
         """Validate configuration."""
@@ -221,6 +242,62 @@ def create_agent_auth() -> AuthConfig:
 def create_gssapi_auth() -> AuthConfig:
     """Create GSSAPI/Kerberos authentication config."""
     return AuthConfig(method=AuthMethod.GSSAPI)
+
+
+def create_keyboard_interactive_auth(
+    password: str | None = None,
+    response_callback: Callable[
+        [str, str, list[tuple[str, bool]]], list[str]
+    ] | None = None,
+) -> AuthConfig:
+    """
+    Create keyboard-interactive authentication config.
+
+    Keyboard-interactive auth is used for:
+    - Two-factor authentication (2FA/MFA)
+    - Password change prompts
+    - Custom challenge-response authentication
+
+    Args:
+        password: Password to use for auto-responding to password prompts.
+                  If provided, all prompts will receive this password.
+        response_callback: Callback function for custom prompt handling.
+                          Signature: (name, instructions, prompts) -> responses
+                          where prompts is list of (prompt_text, echo_enabled) tuples.
+                          If provided, takes precedence over password.
+
+    Returns:
+        AuthConfig for keyboard-interactive authentication.
+
+    Raises:
+        AssertionError: If neither password nor callback is provided.
+
+    Example:
+        # Auto-respond with password
+        config = create_keyboard_interactive_auth(password="secret")
+
+        # Custom callback for 2FA
+        def my_callback(name, instructions, prompts):
+            responses = []
+            for prompt_text, echo in prompts:
+                if "password" in prompt_text.lower():
+                    responses.append("secret")
+                elif "code" in prompt_text.lower():
+                    responses.append(input(prompt_text))
+                else:
+                    responses.append(input(prompt_text))
+            return responses
+
+        config = create_keyboard_interactive_auth(response_callback=my_callback)
+    """
+    assert password is not None or response_callback is not None, \
+        "Either password or response_callback required for keyboard-interactive auth"
+
+    return AuthConfig(
+        method=AuthMethod.KEYBOARD_INTERACTIVE,
+        password=password,
+        kbdint_response_callback=response_callback,
+    )
 
 
 def check_gssapi_available() -> bool:

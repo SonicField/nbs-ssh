@@ -65,6 +65,11 @@ class MockServerConfig:
         only_offer_ciphers: Only offer these ciphers (for security tests)
         only_offer_kex: Only offer these KEX algorithms
         only_offer_macs: Only offer these MAC algorithms
+        kbdint_enabled: Enable keyboard-interactive authentication
+        kbdint_prompts: List of (prompt_text, echo_enabled) for challenges
+        kbdint_expected_responses: Expected responses for each prompt
+        kbdint_name: Challenge name to display
+        kbdint_instructions: Instructions to display
     """
     username: str = "test"
     password: str = "test"
@@ -96,6 +101,13 @@ class MockServerConfig:
     command_outputs: dict[str, tuple[str, str]] = field(default_factory=dict)
     slow_output_bytes_per_sec: int | None = None
     execute_commands: bool = False  # Actually execute commands via shell
+
+    # Keyboard-interactive auth configuration
+    kbdint_enabled: bool = False
+    kbdint_prompts: list[tuple[str, bool]] = field(default_factory=list)
+    kbdint_expected_responses: list[str] = field(default_factory=list)
+    kbdint_name: str = ""
+    kbdint_instructions: str = ""
 
     def __post_init__(self) -> None:
         """Validate configuration."""
@@ -268,6 +280,111 @@ class MockSSHServerProtocol(asyncssh.SSHServer):
             reason="key_not_authorized",
         )
         return False
+
+    def kbdint_auth_supported(self) -> bool:
+        """Indicate that keyboard-interactive auth is supported when enabled."""
+        return self._config.kbdint_enabled
+
+    def get_kbdint_challenge(
+        self,
+        username: str,
+        lang: str,
+        submethods: str,
+    ) -> tuple[str, str, str, list[tuple[str, bool]]] | None:
+        """
+        Get keyboard-interactive challenge for client.
+
+        Args:
+            username: Username attempting auth
+            lang: Language tag from client
+            submethods: Requested submethods from client
+
+        Returns:
+            Tuple of (name, instructions, lang, prompts) or None.
+        """
+        self._emitter.emit(
+            "SERVER_KBDINT_CHALLENGE",
+            username=username,
+            submethods=submethods,
+        )
+
+        # Use configured prompts, or default to password prompt
+        prompts = self._config.kbdint_prompts
+        if not prompts:
+            prompts = [("Password: ", False)]
+
+        return (
+            self._config.kbdint_name,
+            self._config.kbdint_instructions,
+            "",  # lang tag
+            prompts,
+        )
+
+    async def validate_kbdint_response(
+        self,
+        username: str,
+        responses: list[str],
+    ) -> bool | tuple[str, str, str, list[tuple[str, bool]]]:
+        """
+        Validate keyboard-interactive responses.
+
+        Args:
+            username: Username attempting auth
+            responses: List of responses from client
+
+        Returns:
+            True if auth succeeded, False if failed, or tuple for another challenge.
+        """
+        self._auth_attempts += 1
+
+        # Apply delay if configured
+        if self._config.delay_auth > 0:
+            await asyncio.sleep(self._config.delay_auth)
+
+        # Check if we should fail this attempt
+        if self._auth_attempts <= self._config.auth_attempts_before_success:
+            self._emitter.emit(
+                "SERVER_AUTH",
+                username=username,
+                method="keyboard-interactive",
+                success=False,
+                attempt=self._auth_attempts,
+                reason="configured_failure",
+            )
+            return False
+
+        # Check username
+        if username != self._config.username:
+            self._emitter.emit(
+                "SERVER_AUTH",
+                username=username,
+                method="keyboard-interactive",
+                success=False,
+                attempt=self._auth_attempts,
+                reason="invalid_username",
+            )
+            return False
+
+        # Check responses against expected
+        expected = self._config.kbdint_expected_responses
+        if not expected:
+            # Default: expect password
+            expected = [self._config.password]
+
+        valid = responses == expected
+
+        self._emitter.emit(
+            "SERVER_AUTH",
+            username=username,
+            method="keyboard-interactive",
+            success=valid,
+            attempt=self._auth_attempts,
+            reason="responses_match" if valid else "invalid_responses",
+            num_responses=len(responses),
+            num_expected=len(expected),
+        )
+
+        return valid
 
 
 async def handle_mock_process(

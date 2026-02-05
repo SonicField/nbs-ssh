@@ -7,6 +7,7 @@ Usage:
     python -m nbs_ssh -p 2222 user@host command
     python -m nbs_ssh -i keyfile user@host command
     python -m nbs_ssh --password user@host command
+    python -m nbs_ssh --keyboard-interactive user@host command
     python -m nbs_ssh --events user@host command
     python -m nbs_ssh --help
 """
@@ -18,6 +19,48 @@ import getpass
 import os
 import sys
 from pathlib import Path
+
+
+def cli_kbdint_callback(
+    name: str,
+    instructions: str,
+    prompts: list[tuple[str, bool]],
+) -> list[str]:
+    """
+    Prompt user for keyboard-interactive responses.
+
+    This callback is used when keyboard-interactive auth is requested.
+    It displays the challenge name and instructions, then prompts the user
+    for each response.
+
+    Args:
+        name: Challenge name (may be empty)
+        instructions: Instructions to display (may be empty)
+        prompts: List of (prompt_text, echo_enabled) tuples
+
+    Returns:
+        List of responses from user.
+    """
+    # Display name if provided
+    if name:
+        print(name, file=sys.stderr)
+
+    # Display instructions if provided
+    if instructions:
+        print(instructions, file=sys.stderr)
+
+    # Collect responses for each prompt
+    responses = []
+    for prompt_text, echo_enabled in prompts:
+        if echo_enabled:
+            # Echo input back to user
+            response = input(prompt_text)
+        else:
+            # Hide input (for passwords)
+            response = getpass.getpass(prompt_text)
+        responses.append(response)
+
+    return responses
 
 
 def parse_target(target: str) -> tuple[str, str | None]:
@@ -79,6 +122,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--keyboard-interactive",
+        action="store_true",
+        help="Force keyboard-interactive authentication (for 2FA/MFA)",
+    )
+
+    parser.add_argument(
         "--events",
         action="store_true",
         help="Print JSONL events to stderr",
@@ -122,6 +171,7 @@ async def run_command(args: argparse.Namespace) -> int:
         create_agent_auth,
         create_gssapi_auth,
         create_key_auth,
+        create_keyboard_interactive_auth,
         create_password_auth,
         get_agent_available,
         get_default_key_paths,
@@ -150,6 +200,12 @@ async def run_command(args: argparse.Namespace) -> int:
         password = getpass.getpass(f"Password for {username}@{host}: ")
         auth_configs.append(create_password_auth(password))
 
+    if getattr(args, 'keyboard_interactive', False):
+        # Use keyboard-interactive with CLI callback for prompts
+        auth_configs.append(
+            create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
+        )
+
     # If no explicit auth, try GSSAPI, agent, default keys, then password
     if not auth_configs:
         # Try GSSAPI/Kerberos first (if available)
@@ -165,10 +221,14 @@ async def run_command(args: argparse.Namespace) -> int:
             if key_path.exists() and os.access(key_path, os.R_OK):
                 auth_configs.append(create_key_auth(key_path))
 
-        # If still nothing, fall back to password
+        # If still nothing, fall back to password (with keyboard-interactive as backup)
         if not auth_configs:
             password = getpass.getpass(f"Password for {username}@{host}: ")
             auth_configs.append(create_password_auth(password))
+            # Also add keyboard-interactive for 2FA scenarios
+            auth_configs.append(
+                create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
+            )
 
     # Set up event collection if --events
     event_collector = EventCollector() if args.events else None

@@ -9,6 +9,7 @@ from nbs_ssh.auth import (
     create_agent_auth,
     create_gssapi_auth,
     create_key_auth,
+    create_keyboard_interactive_auth,
     create_password_auth,
 )
 from nbs_ssh.automation import (
@@ -79,6 +80,7 @@ __all__ = [
     "create_key_auth",
     "create_agent_auth",
     "create_gssapi_auth",
+    "create_keyboard_interactive_auth",
     "check_gssapi_available",
     # Automation
     "AutomationEngine",
