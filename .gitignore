@@ -47,3 +47,6 @@ Thumbs.db
 
 # NBS development artefacts
 .nbs/
+
+# Claude Code settings (personal)
+.claude/
