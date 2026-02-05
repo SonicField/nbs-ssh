@@ -16,7 +16,7 @@ from typing import Any, Callable, Sequence
 
 import asyncssh
 
-from nbs_ssh.errors import AgentError, ErrorContext, KeyLoadError
+from nbs_ssh.errors import AgentError, CertificateError, ErrorContext, KeyLoadError
 from nbs_ssh.platform import expand_path, get_agent_available, get_openssh_agent_available
 
 
@@ -83,6 +83,8 @@ class AuthConfig:
     kbdint_response_callback: Callable[
         [str, str, list[tuple[str, bool]]], list[str]
     ] | None = None
+    # Certificate authentication (pairs with key_path for PRIVATE_KEY method)
+    certificate_path: Path | str | None = None  # Path to SSH certificate file
 
     def __post_init__(self) -> None:
         """Validate configuration."""
@@ -98,11 +100,17 @@ class AuthConfig:
         if self.key_path is not None:
             self.key_path = expand_path(self.key_path)
 
+        # Normalise certificate_path to Path using platform-aware expansion
+        if self.certificate_path is not None:
+            self.certificate_path = expand_path(self.certificate_path)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for logging (excludes secrets)."""
         result = {"method": self.method.value}
         if self.key_path:
             result["key_path"] = str(self.key_path)
+        if self.certificate_path:
+            result["certificate_path"] = str(self.certificate_path)
         return result
 
 
@@ -161,6 +169,69 @@ def load_private_key(
         raise KeyLoadError(
             f"Unexpected error loading private key {key_path}: {e}",
             key_path=str(key_path),
+            reason="unknown",
+        ) from e
+
+
+def load_certificate(
+    cert_path: Path | str,
+) -> asyncssh.SSHCertificate:
+    """
+    Load an SSH certificate from file.
+
+    SSH certificates are signed by a Certificate Authority (CA) and provide
+    an alternative to distributing public keys via authorized_keys files.
+    They are commonly used in enterprise environments for centralized
+    key management.
+
+    Args:
+        cert_path: Path to the certificate file (typically ending in -cert.pub)
+
+    Returns:
+        Loaded SSH certificate
+
+    Raises:
+        CertificateError: If certificate cannot be loaded (file not found,
+                         bad format, expired)
+    """
+    cert_path = expand_path(cert_path)
+
+    # Check file exists
+    if not cert_path.exists():
+        raise CertificateError(
+            f"Certificate file not found: {cert_path}",
+            cert_path=str(cert_path),
+            reason="file_not_found",
+        )
+
+    # Check file is readable
+    if not os.access(cert_path, os.R_OK):
+        raise CertificateError(
+            f"Certificate file not readable: {cert_path}",
+            cert_path=str(cert_path),
+            reason="permission_denied",
+        )
+
+    try:
+        return asyncssh.read_certificate(str(cert_path))
+    except asyncssh.KeyImportError as e:
+        error_msg = str(e).lower()
+        if "expired" in error_msg:
+            reason = "expired"
+        elif "format" in error_msg or "invalid" in error_msg:
+            reason = "invalid_format"
+        else:
+            reason = "import_error"
+
+        raise CertificateError(
+            f"Failed to load certificate {cert_path}: {e}",
+            cert_path=str(cert_path),
+            reason=reason,
+        ) from e
+    except Exception as e:
+        raise CertificateError(
+            f"Unexpected error loading certificate {cert_path}: {e}",
+            cert_path=str(cert_path),
             reason="unknown",
         ) from e
 
@@ -225,12 +296,75 @@ def create_password_auth(password: str) -> AuthConfig:
 def create_key_auth(
     key_path: Path | str,
     passphrase: str | None = None,
+    certificate_path: Path | str | None = None,
 ) -> AuthConfig:
-    """Create private key authentication config."""
+    """
+    Create private key authentication config.
+
+    Args:
+        key_path: Path to the private key file
+        passphrase: Optional passphrase for encrypted keys
+        certificate_path: Optional path to SSH certificate file.
+                          This matches OpenSSH's CertificateFile option.
+
+    Returns:
+        AuthConfig for private key authentication
+
+    Example:
+        # Key auth without certificate
+        config = create_key_auth("~/.ssh/id_rsa")
+
+        # Key auth with certificate (enterprise CA-signed)
+        config = create_key_auth(
+            key_path="~/.ssh/id_rsa",
+            certificate_path="~/.ssh/id_rsa-cert.pub",
+        )
+    """
     return AuthConfig(
         method=AuthMethod.PRIVATE_KEY,
         key_path=key_path,
         passphrase=passphrase,
+        certificate_path=certificate_path,
+    )
+
+
+def create_cert_auth(
+    key_path: Path | str,
+    certificate_path: Path | str,
+    passphrase: str | None = None,
+) -> AuthConfig:
+    """
+    Create certificate-based authentication config.
+
+    This is a convenience function for certificate authentication,
+    which requires both a private key and its associated certificate
+    signed by a trusted Certificate Authority (CA).
+
+    SSH certificates are commonly used in enterprise environments
+    for centralized key management. The CA signs user certificates,
+    and servers trust the CA rather than individual public keys.
+
+    Args:
+        key_path: Path to the private key file
+        certificate_path: Path to the SSH certificate file
+                          (typically key_path + "-cert.pub")
+        passphrase: Optional passphrase for encrypted keys
+
+    Returns:
+        AuthConfig for certificate authentication
+
+    Example:
+        # Standard certificate auth
+        config = create_cert_auth(
+            key_path="~/.ssh/id_rsa",
+            certificate_path="~/.ssh/id_rsa-cert.pub",
+        )
+    """
+    return AuthConfig(
+        method=AuthMethod.PRIVATE_KEY,
+        key_path=key_path,
+        passphrase=passphrase,
+        certificate_path=certificate_path,
     )
 
 

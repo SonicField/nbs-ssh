@@ -30,17 +30,20 @@ from nbs_ssh.auth import (
     check_agent_available,
     check_gssapi_available,
     create_agent_auth,
+    create_cert_auth,
     create_gssapi_auth,
     create_key_auth,
     create_keyboard_interactive_auth,
     create_password_auth,
     get_agent_keys,
+    load_certificate,
     load_private_key,
 )
 from nbs_ssh.errors import (
     AgentError,
     AuthenticationError,
     AuthFailed,
+    CertificateError,
     ConnectionRefused,
     ConnectionTimeout,
     DisconnectReason,
@@ -524,6 +527,11 @@ class SSHConnection:
             key = load_private_key(auth_config.key_path, auth_config.passphrase)
             options["client_keys"] = [key]
             options["password"] = None  # Disable password auth
+
+            # Load certificate if provided (CertificateFile support)
+            if auth_config.certificate_path is not None:
+                cert = load_certificate(auth_config.certificate_path)
+                options["client_certs"] = [cert]
 
         elif auth_config.method == AuthMethod.SSH_AGENT:
             # Get keys from agent
