@@ -115,7 +115,14 @@ async def run_command(args: argparse.Namespace) -> int:
     Returns:
         Exit code from remote command (or 1 on error)
     """
-    from nbs_ssh import SSHConnection, create_key_auth, create_password_auth
+    from nbs_ssh import (
+        SSHConnection,
+        create_agent_auth,
+        create_key_auth,
+        create_password_auth,
+        get_agent_available,
+        get_default_key_paths,
+    )
     from nbs_ssh.events import EventCollector
 
     # Parse target
@@ -141,10 +148,21 @@ async def run_command(args: argparse.Namespace) -> int:
         password = getpass.getpass(f"Password for {username}@{host}: ")
         auth_configs.append(create_password_auth(password))
 
-    # If no explicit auth, try password prompt
+    # If no explicit auth, try agent, then default keys, then password
     if not auth_configs:
-        password = getpass.getpass(f"Password for {username}@{host}: ")
-        auth_configs.append(create_password_auth(password))
+        # Try SSH agent first
+        if get_agent_available():
+            auth_configs.append(create_agent_auth())
+
+        # Try default key paths
+        for key_path in get_default_key_paths():
+            if key_path.exists():
+                auth_configs.append(create_key_auth(key_path))
+
+        # If still nothing, fall back to password
+        if not auth_configs:
+            password = getpass.getpass(f"Password for {username}@{host}: ")
+            auth_configs.append(create_password_auth(password))
 
     # Set up event collection if --events
     event_collector = EventCollector() if args.events else None
