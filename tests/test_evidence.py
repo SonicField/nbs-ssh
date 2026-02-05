@@ -206,6 +206,115 @@ b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz
 
         assert result["host"] == "192.168.1.100"
 
+    def test_redact_pin_in_dict(self) -> None:
+        """PIN fields should be redacted."""
+        data = {"pin": "1234", "other": "value"}
+        result = redact_secrets(data)
+
+        assert result["pin"] == "[REDACTED]"
+        assert result["other"] == "value"
+
+    def test_redact_pin_in_string(self) -> None:
+        """PIN patterns in strings should be redacted."""
+        # JSON format
+        text = '{"pin": "5678"}'
+        result = redact_string(text)
+        assert '"pin": "[REDACTED]"' in result
+        assert "5678" not in result
+
+        # Key=value format
+        text2 = "pin=9012"
+        result2 = redact_string(text2)
+        assert "pin=[REDACTED]" in result2
+        assert "9012" not in result2
+
+        # Colon format (common in logs)
+        text3 = "PIN: 3456"
+        result3 = redact_string(text3)
+        assert "[REDACTED]" in result3
+        assert "3456" not in result3
+
+    def test_redact_token_in_dict(self) -> None:
+        """Token fields should be redacted."""
+        data = {"token": "abc123xyz", "access_token": "secret_token"}
+        result = redact_secrets(data)
+
+        assert result["token"] == "[REDACTED]"
+        assert result["access_token"] == "[REDACTED]"
+
+    def test_redact_token_in_string(self) -> None:
+        """Token patterns in strings should be redacted."""
+        # JSON format
+        text = '{"token": "my_secret_token"}'
+        result = redact_string(text)
+        assert '"token": "[REDACTED]"' in result
+        assert "my_secret_token" not in result
+
+        # Access token
+        text2 = '{"access_token": "bearer_xyz"}'
+        result2 = redact_string(text2)
+        assert '"access_token": "[REDACTED]"' in result2
+
+    def test_redact_api_key_in_dict(self) -> None:
+        """API key fields should be redacted."""
+        data = {"api_key": "key_12345", "other": "value"}
+        result = redact_secrets(data)
+
+        assert result["api_key"] == "[REDACTED]"
+        assert result["other"] == "value"
+
+    def test_redact_passphrase_in_string(self) -> None:
+        """Passphrase patterns in strings should be redacted."""
+        text = '{"passphrase": "my_secret_passphrase"}'
+        result = redact_string(text)
+
+        assert '"passphrase": "[REDACTED]"' in result
+        assert "my_secret_passphrase" not in result
+
+    def test_redact_authorization_header(self) -> None:
+        """Authorization headers should be redacted."""
+        text = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9"
+        result = redact_string(text)
+
+        assert "Authorization: Bearer [REDACTED]" in result
+        assert "eyJhbGciOiJIUzI1NiJ9" not in result
+
+        text2 = "Authorization: Basic dXNlcjpwYXNz"
+        result2 = redact_string(text2)
+
+        assert "Authorization: Basic [REDACTED]" in result2
+        assert "dXNlcjpwYXNz" not in result2
+
+    def test_key_path_preserved_content_redacted(self) -> None:
+        """Key file paths should be preserved but key content redacted."""
+        # Error message with path should keep the path
+        error_msg = "Failed to load key from /home/user/.ssh/id_rsa: invalid format"
+        result = redact_string(error_msg)
+        assert "/home/user/.ssh/id_rsa" in result
+
+        # But actual key content in the message should be redacted
+        error_with_key = """Failed to parse key:
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpQIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyf8R6vZn8H9Q3
+-----END RSA PRIVATE KEY-----"""
+        result2 = redact_string(error_with_key)
+        assert "[REDACTED PRIVATE KEY]" in result2
+        assert "MIIEpQIBAAKCAQEA" not in result2
+
+    def test_redact_client_secret(self) -> None:
+        """Client secrets should be redacted."""
+        data = {"client_secret": "oauth_secret_xyz"}
+        result = redact_secrets(data)
+
+        assert result["client_secret"] == "[REDACTED]"
+
+    def test_redact_secret_key(self) -> None:
+        """Secret key fields should be redacted."""
+        data = {"secret_key": "django_secret"}
+        result = redact_secrets(data)
+
+        assert result["secret_key"] == "[REDACTED]"
+
     def test_bundle_redacts_by_default(self) -> None:
         """Bundle export should redact by default."""
         bundle = EvidenceBundle(

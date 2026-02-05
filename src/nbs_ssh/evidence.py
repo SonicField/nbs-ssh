@@ -35,6 +35,34 @@ SECRET_PATTERNS = [
     (re.compile(r'"password"\s*:\s*"[^"]*"', re.IGNORECASE), '"password": "[REDACTED]"'),
     (re.compile(r"'password'\s*:\s*'[^']*'", re.IGNORECASE), "'password': '[REDACTED]'"),
     (re.compile(r"password\s*=\s*[^\s,\}]+", re.IGNORECASE), "password=[REDACTED]"),
+    # Passphrase patterns
+    (re.compile(r'"passphrase"\s*:\s*"[^"]*"', re.IGNORECASE), '"passphrase": "[REDACTED]"'),
+    (re.compile(r"'passphrase'\s*:\s*'[^']*'", re.IGNORECASE), "'passphrase': '[REDACTED]'"),
+    (re.compile(r"passphrase\s*=\s*[^\s,\}]+", re.IGNORECASE), "passphrase=[REDACTED]"),
+    # PIN patterns (4-8 digit codes typically)
+    (re.compile(r'"pin"\s*:\s*"[^"]*"', re.IGNORECASE), '"pin": "[REDACTED]"'),
+    (re.compile(r"'pin'\s*:\s*'[^']*'", re.IGNORECASE), "'pin': '[REDACTED]'"),
+    (re.compile(r"\bpin\s*=\s*[^\s,\}]+", re.IGNORECASE), "pin=[REDACTED]"),
+    (re.compile(r"\bpin\s*:\s*\d+", re.IGNORECASE), "pin: [REDACTED]"),
+    # Token patterns
+    (re.compile(r'"token"\s*:\s*"[^"]*"', re.IGNORECASE), '"token": "[REDACTED]"'),
+    (re.compile(r"'token'\s*:\s*'[^']*'", re.IGNORECASE), "'token': '[REDACTED]'"),
+    (re.compile(r"\btoken\s*=\s*[^\s,\}]+", re.IGNORECASE), "token=[REDACTED]"),
+    (re.compile(r'"access_token"\s*:\s*"[^"]*"', re.IGNORECASE), '"access_token": "[REDACTED]"'),
+    (re.compile(r'"auth_token"\s*:\s*"[^"]*"', re.IGNORECASE), '"auth_token": "[REDACTED]"'),
+    (re.compile(r'"api_token"\s*:\s*"[^"]*"', re.IGNORECASE), '"api_token": "[REDACTED]"'),
+    # API key patterns
+    (re.compile(r'"api_key"\s*:\s*"[^"]*"', re.IGNORECASE), '"api_key": "[REDACTED]"'),
+    (re.compile(r"'api_key'\s*:\s*'[^']*'", re.IGNORECASE), "'api_key': '[REDACTED]'"),
+    (re.compile(r"\bapi_key\s*=\s*[^\s,\}]+", re.IGNORECASE), "api_key=[REDACTED]"),
+    # Secret patterns
+    (re.compile(r'"secret"\s*:\s*"[^"]*"', re.IGNORECASE), '"secret": "[REDACTED]"'),
+    (re.compile(r"'secret'\s*:\s*'[^']*'", re.IGNORECASE), "'secret': '[REDACTED]'"),
+    (re.compile(r"\bsecret\s*=\s*[^\s,\}]+", re.IGNORECASE), "secret=[REDACTED]"),
+    (re.compile(r'"client_secret"\s*:\s*"[^"]*"', re.IGNORECASE), '"client_secret": "[REDACTED]"'),
+    # Authorization header patterns
+    (re.compile(r"Authorization:\s*Bearer\s+[^\s]+", re.IGNORECASE), "Authorization: Bearer [REDACTED]"),
+    (re.compile(r"Authorization:\s*Basic\s+[^\s]+", re.IGNORECASE), "Authorization: Basic [REDACTED]"),
     # Private key contents (PEM format)
     (
         re.compile(
@@ -64,6 +92,15 @@ REDACT_KEYS = frozenset({
     "secret",
     "token",
     "credential",
+    "pin",
+    "api_key",
+    "access_token",
+    "auth_token",
+    "api_token",
+    "client_secret",
+    "secret_key",
+    "auth_header",
+    "authorization",
 })
 
 

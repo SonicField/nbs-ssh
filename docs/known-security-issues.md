@@ -228,7 +228,7 @@ Millisecond-precision timing in event logs.
 | MED-2 | No username validation | **FIXED** | `validate_username()` - POSIX-style, max 32 chars |
 | MED-3 | Path traversal | ACCEPTED | Key paths come from user/config, not untrusted input |
 | MED-4 | Regex pattern injection (ReDoS) | ACCEPTED | Automation patterns from user code, not untrusted input |
-| MED-5 | Incomplete evidence redaction | FUTURE | Evidence bundles are for debugging, not external sharing |
+| MED-5 | Incomplete evidence redaction | **FIXED** | Comprehensive patterns for passwords, PINs, tokens, API keys, auth headers |
 | MED-6 | Transcript captures passwords | ACCEPTED | Automation is for controlled scripts, not untrusted input |
 | MED-7 | No renegotiation config | ACCEPTED | AsyncSSH handles renegotiation |
 | MED-8 | No port validation | **FIXED** | `validate_port()` - Range 1-65535 |
