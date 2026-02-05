@@ -8,8 +8,8 @@ Build an AI-inspectable SSH client library using AsyncSSH that provides exec, st
 
 Phase: COMPLETE
 Active workers: none
-Workers since last check: 1
-Remaining: none
+Workers since last check: 3
+Remaining: none - **253 tests pass, 0 skipped**
 
 ## Progress
 
@@ -32,6 +32,9 @@ Remaining: none
 - [2026-02-04] Worker-011 completed: Test migration (53 passed, 8 skipped - StreamExecResult bug)
 - [2026-02-04] Worker-012 completed: CLI interface (15 tests, all features)
 - [2026-02-04] Worker-013 completed: Documentation (4 docs, 2643 lines)
+- [2026-02-05] Worker-014 completed: StreamExecResult bug fix (7 tests unskipped)
+- [2026-02-05] Worker-015 completed: Key auth for MockSSHServer (1 test unskipped)
+- [2026-02-05] **ALL TESTS PASS**: 253 passed, 0 skipped
 
 ## Decisions Log
 
@@ -196,6 +199,51 @@ Remaining slices: 4 (Supervisor FSM), 5 (Port Forwards), 6 (Expect/Respond), 7 (
 **What we can do better:**
 - Documentation could be verified by running examples
 - Consider adding automated doc verification tests
+
+### Worker: worker-014-streamexec-fix - 2026-02-05
+
+**What went well:**
+- Found and fixed 3 bugs in StreamExecResult.__anext__
+- Implemented 7 integration tests that were previously skipped
+- All 253 tests pass with comprehensive verification
+- Root cause analysis documented clearly
+
+**What didn't work:**
+- Bug was more complex than initially documented (3 bugs, not 2)
+- Required understanding of asyncio.timeout() interaction with CancelledError
+
+**What we can do better:**
+- When documenting bugs, investigate fully before creating tasks
+- Test asyncio patterns with real timeout scenarios
+
+### Worker: worker-015-keyauth - 2026-02-05
+
+**What went well:**
+- Clean implementation using asyncssh key verification
+- Generated test keypair dynamically (no fixture files needed)
+- All 6 tests in test_hello_ssh.py pass
+- Ran in parallel with worker-014 without conflicts
+
+**What didn't work:**
+- Nothing notable - task completed smoothly
+
+**What we can do better:**
+- Consider adding more key types (ed25519, ecdsa) to test matrix
+
+### Self-Check - 2026-02-05 (after workers 013-015)
+
+- [x] Am I still pursuing terminal goal? YES - **TERMINAL GOAL ACHIEVED**
+- [x] Am I delegating vs doing tactical work myself? YES - all implementation via workers
+- [x] Have I captured learnings that should improve future tasks? YES
+- [x] Should I escalate anything to human? NO - work complete
+
+**Final State:**
+- 253 tests pass, 0 skipped
+- Pure-Python testing (no Docker required)
+- CLI interface for command-line use
+- Comprehensive documentation (4 files, 2643 lines)
+
+[Reset workers_since_check to 0]
 
 <!--
 Template for each entry:
