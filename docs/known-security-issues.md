@@ -148,13 +148,23 @@ No equivalent to OpenSSH's `AllowTcpForwarding`, `PermitOpen`, `PermitListen`.
 
 ---
 
-### HIGH-4: No Hostname Validation
+### HIGH-4: Hostname Validation
 
-**Status: FUTURE**
+**Status: FIXED**
 
-Hostnames accepted without RFC validation.
+Hostnames are now validated in `SSHConnection.__init__`:
+- RFC 952/1123 compliant
+- Max 253 characters total, labels max 63 characters
+- Alphanumeric + hyphens only (no leading/trailing hyphens)
+- Shell metacharacters, newlines, null bytes rejected
+- Normalised to lowercase
 
-**Recommendation:** Validate hostnames in your application before passing to nbs-ssh.
+```python
+from nbs_ssh import validate_hostname
+
+# Explicit validation (also called automatically in SSHConnection)
+hostname = validate_hostname("Example.COM")  # Returns "example.com"
+```
 
 ---
 
@@ -215,13 +225,13 @@ Millisecond-precision timing in event logs.
 | ID | Issue | Status | Notes |
 |----|-------|--------|-------|
 | MED-1 | AuthConfig `__repr__` exposes secrets | **FIXED** | `to_dict()` excludes secrets; `__repr__` should be added |
-| MED-2 | No username validation | FUTURE | Validate in application layer |
+| MED-2 | No username validation | **FIXED** | `validate_username()` - POSIX-style, max 32 chars |
 | MED-3 | Path traversal | ACCEPTED | Key paths come from user/config, not untrusted input |
 | MED-4 | Regex pattern injection (ReDoS) | ACCEPTED | Automation patterns from user code, not untrusted input |
 | MED-5 | Incomplete evidence redaction | FUTURE | Evidence bundles are for debugging, not external sharing |
 | MED-6 | Transcript captures passwords | ACCEPTED | Automation is for controlled scripts, not untrusted input |
 | MED-7 | No renegotiation config | ACCEPTED | AsyncSSH handles renegotiation |
-| MED-8 | No port validation | FUTURE | Add port range validation |
+| MED-8 | No port validation | **FIXED** | `validate_port()` - Range 1-65535 |
 | MED-9 | No resource exhaustion protection | ACCEPTED | OS/SSH server limits apply |
 | MED-10 | Intent replay | ACCEPTED | Fresh connection per session |
 
