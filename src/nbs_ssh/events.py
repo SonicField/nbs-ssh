@@ -31,6 +31,7 @@ class EventType(str, Enum):
     CONNECT = "CONNECT"
     AUTH = "AUTH"
     EXEC = "EXEC"
+    SHELL = "SHELL"
     DISCONNECT = "DISCONNECT"
     ERROR = "ERROR"
     # Keepalive events

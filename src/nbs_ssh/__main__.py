@@ -2,7 +2,8 @@
 CLI interface for nbs-ssh.
 
 Usage:
-    python -m nbs_ssh user@host command
+    python -m nbs_ssh user@host              # Interactive shell
+    python -m nbs_ssh user@host command      # Execute command
     python -m nbs_ssh -p 2222 user@host command
     python -m nbs_ssh -i keyfile user@host command
     python -m nbs_ssh --password user@host command
@@ -170,9 +171,14 @@ async def run_command(args: argparse.Namespace) -> int:
 
                 exit_code = result.exit_code
             else:
-                # No command - just connect and disconnect
-                print(f"Connected to {username}@{host}:{args.port}", file=sys.stderr)
-                exit_code = 0
+                # No command - open interactive shell
+                try:
+                    exit_code = await conn.shell()
+                except RuntimeError as e:
+                    # Not a TTY - just connect and print message
+                    print(f"Connected to {username}@{host}:{args.port}", file=sys.stderr)
+                    print(f"(Interactive shell not available: {e})", file=sys.stderr)
+                    exit_code = 0
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

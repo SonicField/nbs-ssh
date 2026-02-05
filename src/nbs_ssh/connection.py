@@ -12,7 +12,12 @@ Error types are imported from nbs_ssh.errors for programmatic handling.
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import sys
+import termios
 import time
+import tty
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Sequence
@@ -617,6 +622,198 @@ class SSHConnection:
         # Return the async iterator wrapper
         # Note: process is a coroutine, we need to handle it in the iterator
         return _StreamExecResultFactory(process, self._emitter, command)
+
+    async def shell(self) -> int:
+        """
+        Open an interactive shell session with PTY.
+
+        This method:
+        - Requests a PTY from the remote server
+        - Puts the local terminal in raw mode
+        - Forwards stdin to remote, remote stdout/stderr to local
+        - Handles terminal resize (SIGWINCH)
+        - Restores terminal on exit (even on crash)
+
+        Returns:
+            Exit code from the shell session
+        """
+        # Precondition: connected
+        assert self._conn is not None, "Not connected. Use async with SSHConnection(...):"
+
+        # Check if stdin is a TTY - if not, we can't do interactive mode
+        if not sys.stdin.isatty():
+            raise RuntimeError("Interactive shell requires a TTY (stdin is not a terminal)")
+
+        # Get current terminal size
+        try:
+            term_size = os.get_terminal_size()
+            term_width = term_size.columns
+            term_height = term_size.lines
+        except OSError:
+            # Fallback to standard size
+            term_width = 80
+            term_height = 24
+
+        # Get terminal type from environment
+        term_type = os.environ.get("TERM", "xterm")
+
+        start_ms = time.time() * 1000
+
+        self._emitter.emit(
+            EventType.SHELL,
+            status="starting",
+            term=term_type,
+            width=term_width,
+            height=term_height,
+        )
+
+        # Save terminal state for restoration
+        stdin_fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(stdin_fd)
+
+        exit_code = 0
+        process = None
+
+        try:
+            # Start shell process with PTY
+            process = await self._conn.create_process(
+                None,  # No command = shell
+                term_type=term_type,
+                term_size=(term_width, term_height),
+            )
+
+            # Put terminal in raw mode
+            tty.setraw(stdin_fd)
+
+            # Set up SIGWINCH handler for terminal resize
+            resize_event = asyncio.Event()
+
+            def handle_sigwinch(signum: int, frame: Any) -> None:
+                resize_event.set()
+
+            old_sigwinch = signal.signal(signal.SIGWINCH, handle_sigwinch)
+
+            try:
+                # Run the interactive session
+                exit_code = await self._run_shell_session(
+                    process, stdin_fd, resize_event
+                )
+            finally:
+                # Restore SIGWINCH handler
+                signal.signal(signal.SIGWINCH, old_sigwinch)
+
+        except Exception as e:
+            self._emitter.emit(
+                EventType.SHELL,
+                status="error",
+                error=str(e),
+            )
+            raise
+
+        finally:
+            # Always restore terminal state
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_settings)
+
+            # Emit completion event
+            duration_ms = (time.time() * 1000) - start_ms
+            self._emitter.emit(
+                EventType.SHELL,
+                status="completed",
+                exit_code=exit_code,
+                duration_ms=duration_ms,
+            )
+
+        return exit_code
+
+    async def _run_shell_session(
+        self,
+        process: asyncssh.SSHClientProcess,
+        stdin_fd: int,
+        resize_event: asyncio.Event,
+    ) -> int:
+        """
+        Run the interactive shell session loop.
+
+        Handles:
+        - Reading from stdin and sending to remote
+        - Reading from remote and writing to stdout
+        - Terminal resize events
+        """
+        loop = asyncio.get_event_loop()
+
+        # Create tasks for reading/writing
+        done = False
+
+        async def read_stdin() -> None:
+            """Read from local stdin and send to remote."""
+            nonlocal done
+            while not done:
+                try:
+                    # Use executor for blocking stdin read
+                    data = await loop.run_in_executor(
+                        None, lambda: os.read(stdin_fd, 1024)
+                    )
+                    if data:
+                        process.stdin.write(data.decode("utf-8", errors="replace"))
+                    else:
+                        # EOF on stdin
+                        process.stdin.write_eof()
+                        break
+                except (OSError, asyncio.CancelledError):
+                    break
+
+        async def read_remote() -> None:
+            """Read from remote and write to local stdout."""
+            nonlocal done
+            while not done:
+                try:
+                    data = await process.stdout.read(1024)
+                    if data:
+                        sys.stdout.write(data)
+                        sys.stdout.flush()
+                    else:
+                        # Remote closed
+                        break
+                except (asyncssh.ChannelOpenError, asyncio.CancelledError):
+                    break
+
+        async def handle_resize() -> None:
+            """Handle terminal resize events."""
+            nonlocal done
+            while not done:
+                await resize_event.wait()
+                resize_event.clear()
+                try:
+                    term_size = os.get_terminal_size()
+                    process.change_terminal_size(term_size.columns, term_size.lines)
+                except OSError:
+                    pass
+
+        # Start all tasks
+        stdin_task = asyncio.create_task(read_stdin())
+        remote_task = asyncio.create_task(read_remote())
+        resize_task = asyncio.create_task(handle_resize())
+        wait_task = asyncio.create_task(process.wait())
+
+        try:
+            # Wait for process to complete or remote to close
+            await asyncio.wait(
+                {stdin_task, remote_task, wait_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            done = True
+
+        finally:
+            # Cancel all tasks
+            for task in [stdin_task, remote_task, resize_task]:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        return process.exit_status or 0
 
     def get_evidence_bundle(
         self,

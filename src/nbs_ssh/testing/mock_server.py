@@ -276,9 +276,9 @@ async def handle_mock_process(
     emitter: "MockServerEventEmitter",
 ) -> None:
     """
-    Handle command execution on mock server.
+    Handle command execution or shell session on mock server.
 
-    This is called as the process_factory for each exec request.
+    This is called as the process_factory for each exec/shell request.
 
     Supports:
     - Configurable command outputs
@@ -286,8 +286,14 @@ async def handle_mock_process(
     - Output throttling
     - Default echo behaviour
     - Real command execution (when execute_commands=True)
+    - Interactive shell sessions (when command is None)
     """
-    command = process.command or ""
+    command = process.command
+
+    # If no command, this is a shell session request
+    if command is None:
+        await _handle_shell_session(process, config, emitter)
+        return
 
     emitter.emit(
         "SERVER_EXEC",
@@ -414,6 +420,150 @@ async def _execute_real_command(
         )
         process.stderr.write(f"Error executing command: {e}\n")
         process.exit(1)
+
+
+async def _handle_shell_session(
+    process: asyncssh.SSHServerProcess,
+    config: MockServerConfig,
+    emitter: "MockServerEventEmitter",
+) -> None:
+    """
+    Handle an interactive shell session.
+
+    Provides a simple shell implementation that:
+    - Echoes input back with a prompt
+    - Executes basic commands if execute_commands is enabled
+    - Responds to 'exit' to close the session
+    """
+    emitter.emit("SERVER_SHELL_START")
+
+    # Check if PTY was requested
+    term_type = process.get_terminal_type()
+    term_size = process.get_terminal_size()
+
+    emitter.emit(
+        "SERVER_SHELL_PTY",
+        term_type=term_type,
+        term_size=term_size,
+    )
+
+    # Simple shell loop
+    prompt = f"{config.username}@mockhost:~$ "
+    process.stdout.write(prompt)
+
+    try:
+        if config.execute_commands:
+            # Run a real shell
+            shell_proc = await asyncio.create_subprocess_shell(
+                "/bin/bash",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            async def forward_stdin() -> None:
+                """Forward SSH stdin to shell stdin."""
+                while True:
+                    try:
+                        data = await process.stdin.read(1024)
+                        if not data:
+                            break
+                        if shell_proc.stdin:
+                            shell_proc.stdin.write(data.encode())
+                            await shell_proc.stdin.drain()
+                    except (asyncssh.BreakReceived, asyncssh.TerminalSizeChanged):
+                        pass
+                    except Exception:
+                        break
+
+            async def forward_stdout() -> None:
+                """Forward shell stdout to SSH stdout."""
+                while True:
+                    if shell_proc.stdout is None:
+                        break
+                    try:
+                        data = await shell_proc.stdout.read(1024)
+                        if not data:
+                            break
+                        process.stdout.write(data.decode("utf-8", errors="replace"))
+                    except Exception:
+                        break
+
+            async def forward_stderr() -> None:
+                """Forward shell stderr to SSH stderr."""
+                while True:
+                    if shell_proc.stderr is None:
+                        break
+                    try:
+                        data = await shell_proc.stderr.read(1024)
+                        if not data:
+                            break
+                        process.stderr.write(data.decode("utf-8", errors="replace"))
+                    except Exception:
+                        break
+
+            # Run all forwarding tasks
+            stdin_task = asyncio.create_task(forward_stdin())
+            stdout_task = asyncio.create_task(forward_stdout())
+            stderr_task = asyncio.create_task(forward_stderr())
+
+            # Wait for shell to exit
+            exit_code = await shell_proc.wait()
+
+            # Cancel forwarding tasks
+            for task in [stdin_task, stdout_task, stderr_task]:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        else:
+            # Simple mock shell - read lines and echo
+            buffer = ""
+            exit_code = 0
+
+            while True:
+                try:
+                    data = await process.stdin.read(1)
+                    if not data:
+                        break
+
+                    # Echo character back
+                    process.stdout.write(data)
+
+                    if data == "\r" or data == "\n":
+                        # Process command
+                        command = buffer.strip()
+                        buffer = ""
+
+                        # Handle newline
+                        process.stdout.write("\n")
+
+                        if command == "exit":
+                            break
+                        elif command.startswith("echo "):
+                            process.stdout.write(command[5:] + "\n")
+                        elif command == "whoami":
+                            process.stdout.write(config.username + "\n")
+                        elif command:
+                            process.stdout.write(f"-bash: {command}: command not found\n")
+
+                        process.stdout.write(prompt)
+                    else:
+                        buffer += data
+
+                except (asyncssh.BreakReceived, asyncssh.TerminalSizeChanged):
+                    pass
+                except Exception:
+                    break
+
+    except Exception as e:
+        emitter.emit("SERVER_SHELL_ERROR", error=str(e))
+        exit_code = 1
+
+    emitter.emit("SERVER_SHELL_END", exit_code=exit_code)
+    process.exit(exit_code)
 
 
 class MockServerEventEmitter:
