@@ -73,60 +73,93 @@ asyncio.run(main())
 
 ## Authentication
 
-nbs-ssh automatically discovers authentication methods, matching OpenSSH behaviour:
+nbs-ssh supports all common SSH authentication methods, matching OpenSSH behaviour:
 
-1. **SSH agent** (if `SSH_AUTH_SOCK` environment variable is set)
-2. **Keys from SSH config** (`IdentityFile` entries in `~/.ssh/config` and `/etc/ssh/ssh_config`)
-3. **Default keys** (`~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, etc.)
-4. **Password prompt** (CLI only, if nothing else works)
+### Supported Methods
+
+| Method | Description | Helper Function |
+|--------|-------------|-----------------|
+| **SSH Agent** | Keys from ssh-agent | `create_agent_auth()` |
+| **Private Key** | Key files (~/.ssh/id_*) | `create_key_auth(path)` |
+| **Password** | Password authentication | `create_password_auth(pw)` |
+| **GSSAPI/Kerberos** | Enterprise SSO | `create_gssapi_auth()` |
+| **Keyboard-Interactive** | 2FA/MFA challenges | `create_keyboard_interactive_auth()` |
+| **Certificate** | CA-signed certificates | `create_cert_auth(key, cert)` |
+| **PKCS#11** | Smart cards/HSMs | `create_pkcs11_auth(provider)` |
+| **FIDO2/U2F** | YubiKey, security keys | `create_security_key_auth()` |
+
+### Automatic Discovery
+
+By default, nbs-ssh automatically discovers authentication methods:
+
+1. **GSSAPI/Kerberos** (if available and configured)
+2. **SSH agent** (if `SSH_AUTH_SOCK` is set)
+3. **Keys from SSH config** (`IdentityFile` entries)
+4. **Default keys** (`~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, etc.)
+5. **Password prompt** (CLI only, as fallback)
 
 ### SSH Agent
 
-The SSH agent is the preferred authentication method. nbs-ssh will use it automatically when `SSH_AUTH_SOCK` is set:
+The SSH agent is the preferred authentication method:
 
 ```bash
 # Check if agent is available
 echo $SSH_AUTH_SOCK
 ssh-add -l
-
-# If empty, you may need to start an agent or ensure your shell inherits it
 ```
 
-**Common issue:** Some environments (tmux, screen, cron, subprocess spawning) don't inherit `SSH_AUTH_SOCK`. If authentication fails unexpectedly, check that the environment variable is set.
+**Common issue:** Some environments (tmux, screen, cron) don't inherit `SSH_AUTH_SOCK`.
 
-### SSH Config Parsing
+### FIDO2/U2F Security Keys (YubiKey)
 
-nbs-ssh parses SSH config files just like OpenSSH:
+For hardware security keys:
 
-- `~/.ssh/config` (user config, checked first)
-- `/etc/ssh/ssh_config` (system config)
+```python
+from nbs_ssh import SSHConnection, create_security_key_auth
 
-The `IdentityFile` directive is supported, including token expansion:
-- `~` expands to home directory
-- `%u` expands to username
+# Resident keys (stored on device)
+auth = create_security_key_auth(pin="123456")
+
+# File-based sk-* keys
+auth = create_security_key_auth(key_path="~/.ssh/id_ed25519_sk")
+```
+
+Requires: `pip install nbs-ssh[fido2]`
+
+### PKCS#11 Smart Cards
+
+For smart cards and hardware security modules:
+
+```python
+from nbs_ssh import create_pkcs11_auth
+
+auth = create_pkcs11_auth(
+    provider="/usr/lib/opensc-pkcs11.so",
+    pin="123456",
+)
+```
+
+Requires: `pip install nbs-ssh[pkcs11]`
+
+### Certificates
+
+For CA-signed SSH certificates:
+
+```python
+from nbs_ssh import create_cert_auth
+
+auth = create_cert_auth(
+    key_path="~/.ssh/id_ed25519",
+    certificate_path="~/.ssh/id_ed25519-cert.pub",
+)
+```
 
 ### Explicit Authentication
 
 For programmatic control:
 
 ```python
-from nbs_ssh import SSHConnection, create_key_auth, create_password_auth, create_agent_auth
-
-# Use specific key
-async with SSHConnection(
-    host="example.com",
-    username="user",
-    auth=[create_key_auth("~/.ssh/my_key")],
-) as conn:
-    ...
-
-# Use agent explicitly
-async with SSHConnection(
-    host="example.com",
-    username="user",
-    auth=[create_agent_auth()],
-) as conn:
-    ...
+from nbs_ssh import SSHConnection, create_key_auth, create_agent_auth
 
 # Try multiple methods in order
 async with SSHConnection(
@@ -135,11 +168,58 @@ async with SSHConnection(
     auth=[
         create_agent_auth(),
         create_key_auth("~/.ssh/backup_key"),
-        create_password_auth("secret"),
     ],
 ) as conn:
     ...
 ```
+
+### Not Implemented: Host-Based Authentication
+
+Host-based authentication (where the client machine's identity is trusted) is deliberately **not implemented**. This method:
+
+- Relies on trusting entire machines rather than users
+- Creates transitive trust vulnerabilities (compromising one host compromises all)
+- Requires privileged access to host keys
+- Has been superseded by safer alternatives (certificates, agent forwarding)
+
+If you have a legacy environment requiring host-based auth, we recommend migrating to certificate-based authentication instead.
+
+## Proxy Support
+
+nbs-ssh supports connecting through jump hosts and proxies:
+
+### ProxyJump (-J)
+
+```python
+# Single jump host
+async with SSHConnection(
+    host="target.internal",
+    proxy_jump="bastion.example.com",
+) as conn:
+    ...
+
+# Chained jump hosts
+async with SSHConnection(
+    host="target.internal",
+    proxy_jump="jump1.example.com,jump2.example.com",
+) as conn:
+    ...
+```
+
+CLI: `python -m nbs_ssh -J bastion user@target`
+
+### ProxyCommand
+
+```python
+# Custom proxy command
+async with SSHConnection(
+    host="target.internal",
+    proxy_command="nc -X 5 -x socks-proxy:1080 %h %p",
+) as conn:
+    ...
+```
+
+CLI: `python -m nbs_ssh -o "nc proxy %h %p" user@target`
 
 ## Documentation
 
@@ -166,7 +246,7 @@ PYTHONPATH=src pytest tests/test_connection.py -v
 
 - **MockSSHServer**: A real AsyncSSH server that binds to port 0 for parallel test execution
 - **Falsifiable security tests**: Tests that actively attempt attacks (weak ciphers, downgrade attacks) and verify they fail
-- **No Docker dependency**: All 275 tests run against MockSSHServer
+- **No Docker dependency**: All 431 tests run against MockSSHServer
 - **Real command execution**: MockSSHServer can execute actual shell commands when needed
 
 See [Testing Guide](docs/testing.md) for the full testing philosophy and how to write tests.
