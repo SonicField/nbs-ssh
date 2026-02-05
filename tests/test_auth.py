@@ -315,6 +315,51 @@ class TestAgentDetection:
 
 
 # ---------------------------------------------------------------------------
+# GSSAPI Detection Tests
+# ---------------------------------------------------------------------------
+
+class TestGSSAPIDetection:
+    """Test GSSAPI/Kerberos availability checking."""
+
+    def test_check_gssapi_no_asyncssh_support(self) -> None:
+        """check_gssapi_available returns False when AsyncSSH lacks GSSAPI."""
+        from nbs_ssh.auth import check_gssapi_available
+
+        # Mock asyncssh.gss.gss_available to False
+        with patch("asyncssh.gss.gss_available", False):
+            result = check_gssapi_available()
+            assert result is False
+
+    def test_check_gssapi_no_credentials(self) -> None:
+        """check_gssapi_available returns False when no Kerberos credentials."""
+        from nbs_ssh.auth import check_gssapi_available
+
+        # Mock gss_available to True, but klist returns failure
+        with patch("asyncssh.gss.gss_available", True):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=1)
+                result = check_gssapi_available()
+                assert result is False
+
+    def test_check_gssapi_with_valid_credentials(self) -> None:
+        """check_gssapi_available returns True when credentials exist."""
+        from nbs_ssh.auth import check_gssapi_available
+
+        with patch("asyncssh.gss.gss_available", True):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                result = check_gssapi_available()
+                assert result is True
+
+    def test_create_gssapi_auth(self) -> None:
+        """create_gssapi_auth creates correct AuthConfig."""
+        from nbs_ssh.auth import create_gssapi_auth
+
+        config = create_gssapi_auth()
+        assert config.method == AuthMethod.GSSAPI
+
+
+# ---------------------------------------------------------------------------
 # Auth Event Tests (Integration with EventCollector)
 # ---------------------------------------------------------------------------
 

@@ -5,7 +5,9 @@ __version__ = "0.1.0"
 from nbs_ssh.auth import (
     AuthConfig,
     AuthMethod,
+    check_gssapi_available,
     create_agent_auth,
+    create_gssapi_auth,
     create_key_auth,
     create_password_auth,
 )
@@ -76,6 +78,8 @@ __all__ = [
     "create_password_auth",
     "create_key_auth",
     "create_agent_auth",
+    "create_gssapi_auth",
+    "check_gssapi_available",
     # Automation
     "AutomationEngine",
     "ExpectPattern",

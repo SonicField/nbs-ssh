@@ -28,7 +28,9 @@ from nbs_ssh.auth import (
     AuthConfig,
     AuthMethod,
     check_agent_available,
+    check_gssapi_available,
     create_agent_auth,
+    create_gssapi_auth,
     create_key_auth,
     create_password_auth,
     get_agent_keys,
@@ -364,11 +366,18 @@ class SSHConnection:
         if configs:
             return configs
 
-        # Auto-discovery: try agent and default keys
-        # This mirrors the CLI behaviour for library users
+        # Auto-discovery: try GSSAPI, agent, and default keys
+        # This mirrors OpenSSH behaviour for library users
+
+        # GSSAPI/Kerberos (if available and credentials exist)
+        if check_gssapi_available():
+            configs.append(create_gssapi_auth())
+
+        # SSH agent (if available)
         if check_agent_available():
             configs.append(create_agent_auth())
 
+        # Default keys from SSH config and standard locations
         for key_path in get_default_key_paths():
             # Check both existence and readability
             if key_path.exists() and os.access(key_path, os.R_OK):
@@ -522,6 +531,14 @@ class SSHConnection:
                 raise AgentError("No keys available from SSH agent")
             options["client_keys"] = agent_keys
             options["password"] = None
+
+        elif auth_config.method == AuthMethod.GSSAPI:
+            # GSSAPI/Kerberos authentication
+            options["gss_auth"] = True
+            options["gss_kex"] = True
+            options["gss_host"] = self._host
+            options["client_keys"] = []  # Disable key auth
+            options["password"] = None  # Disable password auth
 
         self._conn = await asyncssh.connect(**options)
 

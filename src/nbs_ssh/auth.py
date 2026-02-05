@@ -25,6 +25,7 @@ class AuthMethod(str, Enum):
     PASSWORD = "password"
     PRIVATE_KEY = "private_key"
     SSH_AGENT = "ssh_agent"
+    GSSAPI = "gssapi"
 
 
 @dataclass
@@ -215,3 +216,48 @@ def create_key_auth(
 def create_agent_auth() -> AuthConfig:
     """Create SSH agent authentication config."""
     return AuthConfig(method=AuthMethod.SSH_AGENT)
+
+
+def create_gssapi_auth() -> AuthConfig:
+    """Create GSSAPI/Kerberos authentication config."""
+    return AuthConfig(method=AuthMethod.GSSAPI)
+
+
+def check_gssapi_available() -> bool:
+    """
+    Check if GSSAPI/Kerberos authentication is available.
+
+    Checks:
+    1. AsyncSSH has GSSAPI support (gssapi package installed)
+    2. Valid Kerberos credentials exist
+
+    Returns:
+        True if GSSAPI authentication is likely to work
+    """
+    # Check if AsyncSSH has GSSAPI support
+    try:
+        from asyncssh.gss import gss_available
+        if not gss_available:
+            return False
+    except ImportError:
+        return False
+
+    # Check for valid Kerberos credentials via klist
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["klist", "-s"],  # -s = silent, just check status
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # klist not available, try gssapi module directly
+        try:
+            import gssapi
+            # Try to acquire default credentials
+            creds = gssapi.Credentials(usage="initiate")
+            return creds.lifetime > 0
+        except Exception:
+            return False
+

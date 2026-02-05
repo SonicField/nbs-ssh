@@ -118,7 +118,9 @@ async def run_command(args: argparse.Namespace) -> int:
     """
     from nbs_ssh import (
         SSHConnection,
+        check_gssapi_available,
         create_agent_auth,
+        create_gssapi_auth,
         create_key_auth,
         create_password_auth,
         get_agent_available,
@@ -148,9 +150,13 @@ async def run_command(args: argparse.Namespace) -> int:
         password = getpass.getpass(f"Password for {username}@{host}: ")
         auth_configs.append(create_password_auth(password))
 
-    # If no explicit auth, try agent, then default keys, then password
+    # If no explicit auth, try GSSAPI, agent, default keys, then password
     if not auth_configs:
-        # Try SSH agent first
+        # Try GSSAPI/Kerberos first (if available)
+        if check_gssapi_available():
+            auth_configs.append(create_gssapi_auth())
+
+        # Try SSH agent
         if get_agent_available():
             auth_configs.append(create_agent_auth())
 
