@@ -2,6 +2,8 @@
 
 AI-inspectable SSH client library and CLI built on AsyncSSH.
 
+> **⚠️ Security Notice:** nbs-ssh is designed for development, testing, and AI-assisted debugging - not for production deployment in adversarial network conditions. See [Known Security Issues](docs/known-security-issues.md) for details.
+
 ## Features
 
 - **Interactive shell**: Full PTY support, just like `ssh`
