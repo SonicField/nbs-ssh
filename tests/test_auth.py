@@ -444,3 +444,180 @@ class TestAuthErrorProperties:
         assert "Failed to load key" in data["message"]
         assert data["key_path"] == "/home/user/.ssh/id_rsa"
         assert data["reason"] == "wrong_passphrase"
+
+
+# ---------------------------------------------------------------------------
+# Auth Auto-Discovery Tests
+# ---------------------------------------------------------------------------
+
+class TestAuthAutoDiscovery:
+    """Test automatic auth discovery when no explicit auth is provided.
+
+    Per GitHub issue #1: SSHConnection should automatically try SSH agent
+    and default keys when no explicit auth is provided, matching CLI behaviour.
+    """
+
+    def test_connection_uses_agent_when_available(self, tmp_path: Path) -> None:
+        """
+        Hypothesis: When no auth is provided and agent is available,
+        SSHConnection includes agent auth in its config.
+        """
+        from nbs_ssh.connection import SSHConnection
+
+        # Mock agent as available
+        fake_socket = tmp_path / "agent.sock"
+        fake_socket.touch()
+
+        with patch.dict(os.environ, {"SSH_AUTH_SOCK": str(fake_socket)}):
+            # Create connection without explicit auth
+            conn = SSHConnection(
+                host="example.com",
+                username="user",
+                known_hosts=None,
+            )
+
+            # Check that agent auth was included
+            auth_methods = [c.method for c in conn._auth_configs]
+            assert AuthMethod.SSH_AGENT in auth_methods
+
+    def test_connection_uses_default_keys(self, tmp_path: Path) -> None:
+        """
+        Hypothesis: When no auth is provided and default keys exist,
+        SSHConnection includes them in its config.
+        """
+        from nbs_ssh.connection import SSHConnection
+        from nbs_ssh.platform import get_default_key_paths
+
+        # Create a fake key at a default location
+        # We'll mock get_default_key_paths to return our temp path
+        fake_key = tmp_path / "id_rsa"
+        fake_key.write_text("fake key")
+
+        with patch.dict(os.environ, {}, clear=False):
+            # Remove agent so only keys are used
+            os.environ.pop("SSH_AUTH_SOCK", None)
+
+            with patch("nbs_ssh.connection.get_default_key_paths") as mock_paths:
+                mock_paths.return_value = [fake_key]
+
+                conn = SSHConnection(
+                    host="example.com",
+                    username="user",
+                    known_hosts=None,
+                )
+
+                # Check that key auth was included
+                auth_methods = [c.method for c in conn._auth_configs]
+                assert AuthMethod.PRIVATE_KEY in auth_methods
+
+                # Verify it's our key
+                key_configs = [c for c in conn._auth_configs
+                               if c.method == AuthMethod.PRIVATE_KEY]
+                assert any(str(c.key_path) == str(fake_key) for c in key_configs)
+
+    def test_connection_raises_when_no_auth_available(self) -> None:
+        """
+        Hypothesis: When no auth is provided and no agent/keys exist,
+        SSHConnection raises AuthFailed with helpful message.
+        """
+        from nbs_ssh.connection import SSHConnection
+
+        with patch.dict(os.environ, {}, clear=False):
+            # Remove agent
+            os.environ.pop("SSH_AUTH_SOCK", None)
+
+            # Mock no default keys
+            with patch("nbs_ssh.connection.get_default_key_paths") as mock_paths:
+                mock_paths.return_value = []
+
+                with patch("nbs_ssh.connection.check_agent_available") as mock_agent:
+                    mock_agent.return_value = False
+
+                    with pytest.raises(AuthFailed) as exc_info:
+                        SSHConnection(
+                            host="example.com",
+                            username="user",
+                            known_hosts=None,
+                        )
+
+                    # Error message should be helpful
+                    assert "No authentication methods available" in str(exc_info.value)
+                    assert "SSH agent" in str(exc_info.value)
+                    assert "default locations" in str(exc_info.value)
+
+    def test_explicit_auth_takes_precedence(self, tmp_path: Path) -> None:
+        """
+        Hypothesis: When explicit auth is provided, auto-discovery is skipped.
+        """
+        from nbs_ssh.connection import SSHConnection
+
+        # Mock agent as available
+        fake_socket = tmp_path / "agent.sock"
+        fake_socket.touch()
+
+        with patch.dict(os.environ, {"SSH_AUTH_SOCK": str(fake_socket)}):
+            # Create connection WITH explicit auth
+            conn = SSHConnection(
+                host="example.com",
+                username="user",
+                password="explicit_password",
+                known_hosts=None,
+            )
+
+            # Should only have password auth, not agent
+            auth_methods = [c.method for c in conn._auth_configs]
+            assert auth_methods == [AuthMethod.PASSWORD]
+            assert AuthMethod.SSH_AGENT not in auth_methods
+
+
+@pytest.mark.asyncio
+async def test_auto_discovery_integration_with_mock_server() -> None:
+    """
+    Integration test: SSHConnection with no explicit auth connects
+    successfully when key exists at default location.
+
+    This tests the fix for GitHub issue #1.
+    """
+    import asyncssh
+    import tempfile
+
+    from nbs_ssh.connection import SSHConnection
+    from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+    # Generate a test keypair
+    private_key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
+    public_key = private_key.export_public_key().decode("utf-8")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Write key to "default" location
+        key_path = Path(tmpdir) / "id_rsa"
+        key_path.write_bytes(private_key.export_private_key())
+        key_path.chmod(0o600)
+
+        # Mock get_default_key_paths to return our temp key
+        with patch("nbs_ssh.connection.get_default_key_paths") as mock_paths:
+            mock_paths.return_value = [key_path]
+
+            # Mock agent as unavailable
+            with patch("nbs_ssh.connection.check_agent_available") as mock_agent:
+                mock_agent.return_value = False
+
+                # Create mock server with key auth
+                config = MockServerConfig(
+                    username="test",
+                    password="test",
+                    authorized_keys=[public_key],
+                )
+
+                async with MockSSHServer(config) as server:
+                    # Connect WITHOUT explicit auth - should auto-discover key
+                    async with SSHConnection(
+                        host="localhost",
+                        port=server.port,
+                        username="test",
+                        known_hosts=None,
+                    ) as conn:
+                        result = await conn.exec("echo hello")
+
+                        assert result.exit_code == 0
+                        assert "hello" in result.stdout

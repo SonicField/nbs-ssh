@@ -27,6 +27,8 @@ import asyncssh
 from nbs_ssh.auth import (
     AuthConfig,
     AuthMethod,
+    check_agent_available,
+    create_agent_auth,
     create_key_auth,
     create_password_auth,
     get_agent_keys,
@@ -50,6 +52,7 @@ from nbs_ssh.errors import (
 from nbs_ssh.events import EventCollector, EventEmitter, EventType
 from nbs_ssh.evidence import AlgorithmInfo, EvidenceBundle, HostInfo, TimingInfo
 from nbs_ssh.keepalive import KeepaliveConfig
+from nbs_ssh.platform import get_default_key_paths
 
 
 # Re-export for backwards compatibility
@@ -311,8 +314,13 @@ class SSHConnection:
         # Build auth configs from either new or legacy interface
         self._auth_configs = self._build_auth_configs(auth, password, client_keys)
 
-        assert self._auth_configs, \
-            "At least one auth method required (password, client_keys, or auth=)"
+        if not self._auth_configs:
+            raise AuthFailed(
+                "No authentication methods available. "
+                "No SSH agent running and no keys found at default locations "
+                "(~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.). "
+                "Provide explicit auth via password=, client_keys=, or auth= parameter."
+            )
 
         self._emitter = EventEmitter(
             collector=event_collector,
@@ -331,7 +339,12 @@ class SSHConnection:
         password: str | None,
         client_keys: Sequence[Path | str] | None,
     ) -> list[AuthConfig]:
-        """Build list of auth configs from new or legacy interface."""
+        """Build list of auth configs from new or legacy interface.
+
+        When no explicit auth is provided, automatically tries:
+        1. SSH agent (if available)
+        2. Default keys (~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.)
+        """
         if auth is not None:
             if isinstance(auth, AuthConfig):
                 return [auth]
@@ -346,6 +359,19 @@ class SSHConnection:
 
         if password:
             configs.append(create_password_auth(password))
+
+        # If explicit auth was provided via legacy interface, use it
+        if configs:
+            return configs
+
+        # Auto-discovery: try agent and default keys
+        # This mirrors the CLI behaviour for library users
+        if check_agent_available():
+            configs.append(create_agent_auth())
+
+        for key_path in get_default_key_paths():
+            if key_path.exists():
+                configs.append(create_key_auth(key_path))
 
         return configs
 
