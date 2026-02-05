@@ -24,10 +24,14 @@ from nbs_ssh.auth import (
     AuthConfig,
     AuthMethod,
     check_agent_available,
+    check_security_key_available,
     create_agent_auth,
     create_key_auth,
     create_password_auth,
+    create_security_key_auth,
     load_private_key,
+    load_security_key_file,
+    load_security_key_keys,
 )
 from nbs_ssh.errors import (
     AgentError,
@@ -666,3 +670,220 @@ async def test_auto_discovery_integration_with_mock_server() -> None:
 
                         assert result.exit_code == 0
                         assert "hello" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Security Key (FIDO2/U2F) Tests
+# ---------------------------------------------------------------------------
+
+class TestSecurityKeyConfig:
+    """Test FIDO2/U2F security key authentication configuration."""
+
+    def test_security_key_requires_pin_or_key_path(self) -> None:
+        """SECURITY_KEY method requires either PIN or key_path."""
+        with pytest.raises(AssertionError, match="key_path.*security_key_pin"):
+            AuthConfig(method=AuthMethod.SECURITY_KEY)
+
+    def test_security_key_with_pin_only(self) -> None:
+        """Security key config with PIN for resident keys."""
+        config = AuthConfig(
+            method=AuthMethod.SECURITY_KEY,
+            security_key_pin="123456",
+        )
+
+        assert config.method == AuthMethod.SECURITY_KEY
+        assert config.security_key_pin == "123456"
+        assert config.key_path is None
+        assert config.security_key_touch_required is True
+        assert config.security_key_application == "ssh:"
+
+    def test_security_key_with_key_path_only(self) -> None:
+        """Security key config with sk-* key file."""
+        config = AuthConfig(
+            method=AuthMethod.SECURITY_KEY,
+            key_path="~/.ssh/id_ed25519_sk",
+        )
+
+        assert config.method == AuthMethod.SECURITY_KEY
+        assert "id_ed25519_sk" in str(config.key_path)
+        assert config.security_key_pin is None
+
+    def test_security_key_with_both_pin_and_key_path(self) -> None:
+        """Security key config with both PIN and key file."""
+        config = AuthConfig(
+            method=AuthMethod.SECURITY_KEY,
+            key_path="~/.ssh/id_ed25519_sk",
+            security_key_pin="123456",
+        )
+
+        assert config.method == AuthMethod.SECURITY_KEY
+        assert config.security_key_pin == "123456"
+        assert "id_ed25519_sk" in str(config.key_path)
+
+    def test_security_key_to_dict_excludes_pin(self) -> None:
+        """to_dict() excludes security key PIN."""
+        config = AuthConfig(
+            method=AuthMethod.SECURITY_KEY,
+            security_key_pin="secret123",
+        )
+
+        data = config.to_dict()
+        assert "security_key_pin" not in data
+        assert data["method"] == "security_key"
+        assert data["security_key_touch_required"] is True
+        assert data["security_key_application"] == "ssh:"
+
+    def test_security_key_to_dict_includes_user(self) -> None:
+        """to_dict() includes security key user filter."""
+        config = AuthConfig(
+            method=AuthMethod.SECURITY_KEY,
+            security_key_pin="123456",
+            security_key_user="alice",
+        )
+
+        data = config.to_dict()
+        assert data["security_key_user"] == "alice"
+
+
+class TestSecurityKeyHelperFunctions:
+    """Test security key helper functions."""
+
+    def test_create_security_key_auth_with_pin(self) -> None:
+        """create_security_key_auth() with PIN for resident keys."""
+        config = create_security_key_auth(pin="123456")
+
+        assert config.method == AuthMethod.SECURITY_KEY
+        assert config.security_key_pin == "123456"
+        assert config.key_path is None
+
+    def test_create_security_key_auth_with_key_path(self) -> None:
+        """create_security_key_auth() with key file."""
+        config = create_security_key_auth(
+            key_path="~/.ssh/id_ed25519_sk",
+            passphrase="keypass",
+        )
+
+        assert config.method == AuthMethod.SECURITY_KEY
+        assert "id_ed25519_sk" in str(config.key_path)
+        assert config.passphrase == "keypass"
+
+    def test_create_security_key_auth_with_options(self) -> None:
+        """create_security_key_auth() with all options."""
+        config = create_security_key_auth(
+            pin="123456",
+            application="myapp:",
+            user="testuser",
+            touch_required=False,
+        )
+
+        assert config.security_key_application == "myapp:"
+        assert config.security_key_user == "testuser"
+        assert config.security_key_touch_required is False
+
+
+class TestSecurityKeyAvailability:
+    """Test security key availability detection."""
+
+    def test_check_security_key_available_when_fido2_missing(self) -> None:
+        """check_security_key_available returns False when fido2 not installed."""
+        with patch("asyncssh.sk.sk_available", False):
+            result = check_security_key_available()
+            assert result is False
+
+    def test_check_security_key_available_when_fido2_present(self) -> None:
+        """check_security_key_available returns True when fido2 installed."""
+        with patch("asyncssh.sk.sk_available", True):
+            result = check_security_key_available()
+            assert result is True
+
+
+class TestSecurityKeyLoading:
+    """Test security key loading functions."""
+
+    def test_load_security_key_keys_requires_fido2(self) -> None:
+        """load_security_key_keys raises ValueError when fido2 not available."""
+        with patch("nbs_ssh.auth.check_security_key_available", return_value=False):
+            with pytest.raises(ValueError, match="fido2"):
+                load_security_key_keys(pin="123456")
+
+    def test_load_security_key_file_requires_fido2(self) -> None:
+        """load_security_key_file raises ValueError when fido2 not available."""
+        with patch("nbs_ssh.auth.check_security_key_available", return_value=False):
+            with pytest.raises(ValueError, match="fido2"):
+                load_security_key_file("~/.ssh/id_ed25519_sk")
+
+    def test_load_security_key_file_not_found(self, tmp_path: Path) -> None:
+        """load_security_key_file raises KeyLoadError for missing file."""
+        with patch("nbs_ssh.auth.check_security_key_available", return_value=True):
+            nonexistent = tmp_path / "nonexistent_sk_key"
+            with pytest.raises(KeyLoadError) as exc_info:
+                load_security_key_file(nonexistent)
+
+            error = exc_info.value
+            assert "file_not_found" in error.to_dict().get("reason", "")
+
+    def test_load_security_key_file_permission_denied(self, tmp_path: Path) -> None:
+        """load_security_key_file raises KeyLoadError for unreadable file."""
+        with patch("nbs_ssh.auth.check_security_key_available", return_value=True):
+            key_file = tmp_path / "unreadable_sk_key"
+            key_file.write_text("fake key content")
+            key_file.chmod(0o000)
+
+            try:
+                with pytest.raises(KeyLoadError) as exc_info:
+                    load_security_key_file(key_file)
+
+                error = exc_info.value
+                assert "permission_denied" in error.to_dict().get("reason", "")
+            finally:
+                key_file.chmod(0o644)
+
+    def test_load_security_key_keys_mock_success(self) -> None:
+        """load_security_key_keys succeeds with mocked asyncssh."""
+        with patch("nbs_ssh.auth.check_security_key_available", return_value=True):
+            mock_keys = [MagicMock(), MagicMock()]
+            with patch("asyncssh.load_resident_keys", return_value=mock_keys):
+                result = load_security_key_keys(pin="123456", user="alice")
+
+                assert len(result) == 2
+
+    def test_load_security_key_keys_propagates_error(self) -> None:
+        """load_security_key_keys wraps asyncssh errors in KeyLoadError."""
+        with patch("nbs_ssh.auth.check_security_key_available", return_value=True):
+            with patch("asyncssh.load_resident_keys", side_effect=Exception("No device")):
+                with pytest.raises(KeyLoadError) as exc_info:
+                    load_security_key_keys(pin="123456")
+
+                error = exc_info.value
+                assert "security_key_error" in error.to_dict().get("reason", "")
+                assert "No device" in str(error)
+
+
+class TestSecurityKeyDocumentation:
+    """Test that security key documentation is accurate and complete."""
+
+    def test_auth_method_has_security_key(self) -> None:
+        """AuthMethod enum includes SECURITY_KEY."""
+        assert hasattr(AuthMethod, "SECURITY_KEY")
+        assert AuthMethod.SECURITY_KEY.value == "security_key"
+
+    def test_security_key_in_all_exports(self) -> None:
+        """Security key functions are exported from nbs_ssh."""
+        import nbs_ssh
+
+        assert hasattr(nbs_ssh, "check_security_key_available")
+        assert hasattr(nbs_ssh, "create_security_key_auth")
+        assert hasattr(nbs_ssh, "load_security_key_file")
+        assert hasattr(nbs_ssh, "load_security_key_keys")
+
+    def test_create_security_key_auth_docstring(self) -> None:
+        """create_security_key_auth has comprehensive docstring."""
+        doc = create_security_key_auth.__doc__
+        assert doc is not None
+        assert "FIDO2" in doc
+        assert "U2F" in doc
+        assert "YubiKey" in doc
+        assert "resident" in doc
+        assert "pin" in doc
+        assert "key_path" in doc
+

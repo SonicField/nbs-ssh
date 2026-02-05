@@ -28,6 +28,7 @@ class AuthMethod(str, Enum):
     GSSAPI = "gssapi"
     KEYBOARD_INTERACTIVE = "keyboard_interactive"
     PKCS11 = "pkcs11"
+    SECURITY_KEY = "security_key"  # FIDO2/U2F hardware security keys
 
 
 @dataclass
@@ -42,6 +43,7 @@ class AuthConfig:
     - GSSAPI/Kerberos authentication
     - Keyboard-interactive authentication (2FA, challenge-response)
     - PKCS#11 smart card/hardware token authentication
+    - FIDO2/U2F security key authentication (YubiKey, etc.)
 
     Usage:
         # Password auth
@@ -75,6 +77,18 @@ class AuthConfig:
             pkcs11_pin="123456",  # Optional
         )
 
+        # FIDO2/U2F security key auth (resident keys)
+        config = AuthConfig(
+            method=AuthMethod.SECURITY_KEY,
+            security_key_pin="123456",  # Required for FIDO2 resident keys
+        )
+
+        # FIDO2/U2F security key auth (sk-* key file)
+        config = AuthConfig(
+            method=AuthMethod.SECURITY_KEY,
+            key_path=Path("~/.ssh/id_ed25519_sk"),
+        )
+
         # Multiple methods (fallback)
         configs = [
             AuthConfig(method=AuthMethod.SSH_AGENT),
@@ -101,6 +115,11 @@ class AuthConfig:
     pkcs11_key_id: str | bytes | None = None  # Optional key ID filter
     # Certificate authentication (pairs with key_path for PRIVATE_KEY method)
     certificate_path: Path | str | None = None  # Path to SSH certificate file
+    # FIDO2/U2F security key options
+    security_key_pin: str | None = None  # PIN for FIDO2 resident key access
+    security_key_application: str = "ssh:"  # Application name (usually "ssh:")
+    security_key_user: str | None = None  # Optional user filter for resident keys
+    security_key_touch_required: bool = True  # Require user touch for each auth
 
     def __post_init__(self) -> None:
         """Validate configuration."""
@@ -115,6 +134,13 @@ class AuthConfig:
         if self.method == AuthMethod.PKCS11:
             assert self.pkcs11_provider is not None, \
                 "pkcs11_provider required for PKCS11 auth method"
+
+        if self.method == AuthMethod.SECURITY_KEY:
+            # Either key_path (for sk-* key file) or security_key_pin (for resident keys)
+            # must be provided
+            assert self.key_path is not None or self.security_key_pin is not None, \
+                "Either key_path (for sk-* key file) or security_key_pin " \
+                "(for resident keys) required for SECURITY_KEY auth method"
 
         # Normalise key_path to Path using platform-aware expansion
         if self.key_path is not None:
@@ -137,6 +163,12 @@ class AuthConfig:
             result["pkcs11_key_label"] = self.pkcs11_key_label
         if self.certificate_path:
             result["certificate_path"] = str(self.certificate_path)
+        # Security key fields (excluding PIN which is secret)
+        if self.method == AuthMethod.SECURITY_KEY:
+            result["security_key_application"] = self.security_key_application
+            result["security_key_touch_required"] = self.security_key_touch_required
+            if self.security_key_user:
+                result["security_key_user"] = self.security_key_user
         return result
 
 
@@ -621,5 +653,231 @@ def create_pkcs11_auth(
         pkcs11_token_serial=token_serial,
         pkcs11_key_label=key_label,
         pkcs11_key_id=key_id,
+    )
+
+
+def check_security_key_available() -> bool:
+    """
+    Check if FIDO2/U2F security key support is available.
+
+    Returns True if the fido2 package is installed and asyncssh
+    security key support is enabled.
+
+    Note: This checks if the library support is available, not whether
+    a security key is physically connected.
+
+    Returns:
+        True if FIDO2/U2F security key authentication is available
+    """
+    try:
+        from asyncssh.sk import sk_available
+        return sk_available
+    except ImportError:
+        return False
+
+
+def load_security_key_keys(
+    pin: str,
+    *,
+    application: str = "ssh:",
+    user: str | None = None,
+    touch_required: bool = True,
+) -> Sequence[asyncssh.SSHKey]:
+    """
+    Load resident keys from attached FIDO2 security keys.
+
+    This function discovers and loads SSH keys that are stored on
+    FIDO2 security keys (YubiKey 5 series, etc.) as "resident keys"
+    (also called "discoverable credentials").
+
+    The user must have previously generated a resident key using:
+        ssh-keygen -t ed25519-sk -O resident -O application=ssh:
+
+    Args:
+        pin: The PIN to access the security key (required for FIDO2)
+        application: The application name associated with the keys,
+                     defaults to "ssh:" (the standard for SSH)
+        user: Optional user name to filter keys by
+        touch_required: Whether to require user touch when using the key,
+                        defaults to True (recommended for security)
+
+    Returns:
+        List of SSHKey objects loaded from the security keys.
+        The user name is stored in each key's comment field.
+
+    Raises:
+        ValueError: If security key support is not available
+        KeyLoadError: If keys cannot be loaded from the security key
+
+    Example:
+        # Load all resident SSH keys
+        keys = load_security_key_keys(pin="123456")
+
+        # Load keys for a specific user
+        keys = load_security_key_keys(pin="123456", user="alice")
+    """
+    if not check_security_key_available():
+        raise ValueError(
+            "Security key support not available. Install fido2: "
+            "pip install fido2"
+        )
+
+    try:
+        return asyncssh.load_resident_keys(
+            pin=pin,
+            application=application,
+            user=user,
+            touch_required=touch_required,
+        )
+    except Exception as e:
+        raise KeyLoadError(
+            f"Failed to load keys from security key: {e}",
+            key_path="security_key:resident",
+            reason="security_key_error",
+        ) from e
+
+
+def load_security_key_file(
+    key_path: Path | str,
+    passphrase: str | None = None,
+) -> asyncssh.SSHKey:
+    """
+    Load an sk-* (security key) private key from file.
+
+    This function loads sk-ssh-ed25519 or sk-ecdsa-sha2-nistp256 keys
+    from disk. These key files were generated using:
+        ssh-keygen -t ed25519-sk  # or -t ecdsa-sk
+
+    Note: The key file only contains the public key and a "key handle".
+    The actual signing is performed by the security key hardware.
+    When using this key for authentication:
+    - The security key must be physically connected
+    - The user must touch the key (if touch_required was set during key generation)
+    - The fido2 library must be installed
+
+    Args:
+        key_path: Path to the sk-* private key file
+        passphrase: Optional passphrase if the key file is encrypted
+
+    Returns:
+        Loaded SSH key
+
+    Raises:
+        ValueError: If security key support is not available
+        KeyLoadError: If key cannot be loaded
+
+    Example:
+        key = load_security_key_file("~/.ssh/id_ed25519_sk")
+    """
+    if not check_security_key_available():
+        raise ValueError(
+            "Security key support not available. Install fido2: "
+            "pip install fido2"
+        )
+
+    key_path = expand_path(key_path)
+
+    if not key_path.exists():
+        raise KeyLoadError(
+            f"Security key file not found: {key_path}",
+            key_path=str(key_path),
+            reason="file_not_found",
+        )
+
+    if not os.access(key_path, os.R_OK):
+        raise KeyLoadError(
+            f"Security key file not readable: {key_path}",
+            key_path=str(key_path),
+            reason="permission_denied",
+        )
+
+    try:
+        return asyncssh.read_private_key(str(key_path), passphrase=passphrase)
+    except asyncssh.KeyImportError as e:
+        error_msg = str(e).lower()
+        if "passphrase" in error_msg or "decrypt" in error_msg:
+            reason = "wrong_passphrase"
+        elif "format" in error_msg or "invalid" in error_msg:
+            reason = "invalid_format"
+        elif "security key" in error_msg:
+            reason = "security_key_error"
+        else:
+            reason = "import_error"
+
+        raise KeyLoadError(
+            f"Failed to load security key file {key_path}: {e}",
+            key_path=str(key_path),
+            reason=reason,
+        ) from e
+
+
+def create_security_key_auth(
+    *,
+    pin: str | None = None,
+    key_path: Path | str | None = None,
+    passphrase: str | None = None,
+    application: str = "ssh:",
+    user: str | None = None,
+    touch_required: bool = True,
+) -> AuthConfig:
+    """
+    Create FIDO2/U2F security key authentication config.
+
+    Security keys (YubiKey, SoloKey, etc.) provide hardware-backed SSH
+    authentication using the FIDO2/U2F protocols. There are two modes:
+
+    1. **Resident keys**: Keys stored on the security key itself.
+       Requires PIN to access. Use the `pin` parameter.
+
+    2. **File-based keys**: sk-* key files generated with ssh-keygen.
+       The file contains the public key and key handle; the security
+       key is needed for signing. Use the `key_path` parameter.
+
+    Hardware requirements:
+    - FIDO2 security key (YubiKey 5, SoloKey v2, etc.)
+    - For resident keys: FIDO2 device with credential management
+    - USB HID access to the security key
+
+    Software requirements:
+    - fido2 library: pip install fido2
+    - May require udev rules on Linux for USB access
+
+    Args:
+        pin: PIN for accessing FIDO2 resident keys
+        key_path: Path to sk-* key file (alternative to resident keys)
+        passphrase: Passphrase if the sk-* key file is encrypted
+        application: Application name for resident keys (default "ssh:")
+        user: User name filter for resident keys
+        touch_required: Require user touch for authentication (default True)
+
+    Returns:
+        AuthConfig for security key authentication
+
+    Raises:
+        AssertionError: If neither pin nor key_path is provided
+
+    Example:
+        # Resident key auth (keys stored on device)
+        config = create_security_key_auth(pin="123456")
+
+        # File-based sk key auth
+        config = create_security_key_auth(
+            key_path="~/.ssh/id_ed25519_sk"
+        )
+
+        # Resident key for specific user
+        config = create_security_key_auth(
+            pin="123456",
+            user="alice",
+        )
+    """
+    return AuthConfig(
+        method=AuthMethod.SECURITY_KEY,
+        key_path=key_path,
+        passphrase=passphrase,
+        security_key_pin=pin,
+        security_key_application=application,
+        security_key_user=user,
+        security_key_touch_required=touch_required,
     )
 
