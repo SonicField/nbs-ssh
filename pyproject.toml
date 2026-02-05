@@ -13,7 +13,7 @@ authors = [
     {name = "Dr Alex Turner"}
 ]
 dependencies = [
-    "asyncssh>=2.14.0",
+    "asyncssh>=2.14.2",  # Minimum version excludes CVE-2023-46445, CVE-2023-46446, CVE-2023-48795
 ]
 
 [project.optional-dependencies]
