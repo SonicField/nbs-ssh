@@ -97,6 +97,29 @@ async with SSHConnection(
 - [User Guide](docs/user-guide.md)
 - [Debugging Guide](docs/debugging.md)
 - [API Reference](docs/api-reference.md)
+- [Testing Guide](docs/testing.md)
+
+## Testing
+
+nbs-ssh uses a **pure-Python testing approach** with no Docker required.
+
+```bash
+# Run all tests
+source venv/bin/activate
+PYTHONPATH=src pytest tests/ -v
+
+# Run specific test file
+PYTHONPATH=src pytest tests/test_connection.py -v
+```
+
+### Key Testing Features
+
+- **MockSSHServer**: A real AsyncSSH server that binds to port 0 for parallel test execution
+- **Falsifiable security tests**: Tests that actively attempt attacks (weak ciphers, downgrade attacks) and verify they fail
+- **No Docker dependency**: All 261 tests run against MockSSHServer
+- **Real command execution**: MockSSHServer can execute actual shell commands when needed
+
+See [Testing Guide](docs/testing.md) for the full testing philosophy and how to write tests.
 
 ## Development
 
