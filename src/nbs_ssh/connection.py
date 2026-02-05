@@ -65,6 +65,7 @@ from nbs_ssh.keepalive import KeepaliveConfig
 from nbs_ssh.platform import get_default_key_paths
 from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
 from nbs_ssh.secure_string import SecureString
+from nbs_ssh.validation import validate_hostname, validate_port, validate_username
 
 
 def _reveal(value: str | SecureString | None) -> str | None:
@@ -383,6 +384,12 @@ class SSHConnection:
             connect_timeout = 30.0
 
         assert port > 0, f"Port must be positive, got {port}"
+
+        # Validate inputs to prevent injection attacks (HIGH-4, MED-2, MED-8)
+        host = validate_hostname(host)
+        port = validate_port(port)
+        if username is not None:
+            username = validate_username(username)
 
         self._host = host
         self._port = port

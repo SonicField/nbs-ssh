@@ -77,6 +77,11 @@ from nbs_ssh.platform import (
 from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
 from nbs_ssh.secure_string import SecureString, SecureStringEradicated
 from nbs_ssh.supervisor import ConnectionState, RetryPolicy, SSHSupervisor
+from nbs_ssh.validation import (
+    validate_hostname,
+    validate_port,
+    validate_username,
+)
 
 __all__ = [
     # Connection
@@ -173,4 +178,8 @@ __all__ = [
     # SecureString
     "SecureString",
     "SecureStringEradicated",
+    # Validation
+    "validate_hostname",
+    "validate_port",
+    "validate_username",
 ]
