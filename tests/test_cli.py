@@ -319,3 +319,126 @@ async def test_cli_connection_error() -> None:
         assert exit_code == 1  # Error exit code
     finally:
         cli_module.getpass.getpass = original_getpass
+
+
+@pytest.mark.asyncio
+async def test_cli_uses_default_key_auth() -> None:
+    """
+    Test CLI uses default key when available, without prompting for password.
+
+    Verifies the auth fallback order:
+    1. SSH agent (if available)
+    2. Default keys (~/.ssh/id_rsa, etc.)
+    3. Password prompt (only if nothing else works)
+    """
+    import argparse
+    import tempfile
+    from pathlib import Path
+
+    import asyncssh
+
+    from nbs_ssh.__main__ import run_command
+    from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+    # Generate a test keypair
+    private_key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
+    public_key = private_key.export_public_key().decode("utf-8")
+
+    # Create mock server with key auth
+    config = MockServerConfig(
+        username="test",
+        password="test",
+        authorized_keys=[public_key],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Write private key to a temp file
+        key_path = Path(tmpdir) / "id_rsa"
+        key_path.write_bytes(private_key.export_private_key())
+        key_path.chmod(0o600)
+
+        async with MockSSHServer(config) as server:
+            args = argparse.Namespace(
+                target="test@localhost",
+                command="echo hello",
+                port=server.port,
+                login=None,
+                identity=str(key_path),  # Explicit key
+                password=False,
+                events=False,
+                no_host_check=True,
+                timeout=10.0,
+            )
+
+            import nbs_ssh.__main__ as cli_module
+
+            # Track if getpass was called - it should NOT be
+            getpass_called = False
+            original_getpass = cli_module.getpass.getpass
+
+            def tracking_getpass(prompt: str) -> str:
+                nonlocal getpass_called
+                getpass_called = True
+                return "wrong_password"
+
+            cli_module.getpass.getpass = tracking_getpass
+
+            try:
+                exit_code = await run_command(args)
+                assert exit_code == 0, "Key auth should succeed"
+                assert not getpass_called, "Password should not be prompted when key is provided"
+            finally:
+                cli_module.getpass.getpass = original_getpass
+
+
+@pytest.mark.asyncio
+async def test_cli_falls_back_to_password_when_no_keys() -> None:
+    """
+    Test CLI prompts for password when no agent or keys are available.
+    """
+    import argparse
+
+    from nbs_ssh.__main__ import run_command
+
+    args = argparse.Namespace(
+        target="test@localhost",
+        command="echo test",
+        port=29999,  # Won't connect anyway
+        login=None,
+        identity=None,
+        password=False,
+        events=False,
+        no_host_check=True,
+        timeout=2.0,
+    )
+
+    import nbs_ssh.__main__ as cli_module
+
+    # Mock both agent check and key paths to return nothing
+    original_getpass = cli_module.getpass.getpass
+    getpass_called = False
+
+    def tracking_getpass(prompt: str) -> str:
+        nonlocal getpass_called
+        getpass_called = True
+        return "test"
+
+    cli_module.getpass.getpass = tracking_getpass
+
+    # Also mock get_agent_available and get_default_key_paths
+    import nbs_ssh.__main__
+
+    # Save originals
+    from nbs_ssh import get_agent_available, get_default_key_paths
+
+    # Patch to return no auth methods
+    nbs_ssh.__main__.get_agent_available = lambda: False
+    nbs_ssh.__main__.get_default_key_paths = lambda: []
+
+    try:
+        await run_command(args)  # Will fail to connect, that's OK
+        assert getpass_called, "Password should be prompted when no agent or keys"
+    finally:
+        cli_module.getpass.getpass = original_getpass
+        nbs_ssh.__main__.get_agent_available = get_agent_available
+        nbs_ssh.__main__.get_default_key_paths = get_default_key_paths
