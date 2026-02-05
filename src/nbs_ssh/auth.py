@@ -188,14 +188,14 @@ class AuthConfig:
 
 def load_private_key(
     key_path: Path | str,
-    passphrase: str | None = None,
+    passphrase: str | SecureString | None = None,
 ) -> asyncssh.SSHKey:
     """
     Load a private key from file.
 
     Args:
         key_path: Path to the private key file
-        passphrase: Optional passphrase for encrypted keys
+        passphrase: Optional passphrase for encrypted keys (str or SecureString)
 
     Returns:
         Loaded SSH key
@@ -221,8 +221,13 @@ def load_private_key(
             reason="permission_denied",
         )
 
+    # Convert SecureString to str for asyncssh
+    passphrase_str: str | None = None
+    if passphrase is not None:
+        passphrase_str = str(passphrase) if isinstance(passphrase, SecureString) else passphrase
+
     try:
-        return asyncssh.read_private_key(str(key_path), passphrase=passphrase)
+        return asyncssh.read_private_key(str(key_path), passphrase=passphrase_str)
     except asyncssh.KeyImportError as e:
         error_msg = str(e).lower()
         if "passphrase" in error_msg or "decrypt" in error_msg:
@@ -564,7 +569,7 @@ def check_pkcs11_available() -> bool:
 
 def load_pkcs11_keys(
     provider: str,
-    pin: str | None = None,
+    pin: str | SecureString | None = None,
     *,
     token_label: str | None = None,
     token_serial: str | bytes | None = None,
@@ -579,7 +584,7 @@ def load_pkcs11_keys(
     Args:
         provider: Path to the PKCS#11 provider shared library
                   (e.g., /usr/lib/opensc-pkcs11.so, /usr/lib/libyubico-pkcs11.so)
-        pin: Optional PIN for accessing the token
+        pin: Optional PIN for accessing the token (str or SecureString)
         token_label: Filter by token label
         token_serial: Filter by token serial number
         key_label: Filter by key label
@@ -598,10 +603,15 @@ def load_pkcs11_keys(
             "pip install python-pkcs11"
         )
 
+    # Convert SecureString to str for asyncssh
+    pin_str: str | None = None
+    if pin is not None:
+        pin_str = str(pin) if isinstance(pin, SecureString) else pin
+
     try:
         return asyncssh.load_pkcs11_keys(
             provider=provider,
-            pin=pin,
+            pin=pin_str,
             token_label=token_label,
             token_serial=token_serial,
             key_label=key_label,
@@ -691,7 +701,7 @@ def check_security_key_available() -> bool:
 
 
 def load_security_key_keys(
-    pin: str,
+    pin: str | SecureString,
     *,
     application: str = "ssh:",
     user: str | None = None,
@@ -708,7 +718,7 @@ def load_security_key_keys(
         ssh-keygen -t ed25519-sk -O resident -O application=ssh:
 
     Args:
-        pin: The PIN to access the security key (required for FIDO2)
+        pin: The PIN to access the security key (required for FIDO2, str or SecureString)
         application: The application name associated with the keys,
                      defaults to "ssh:" (the standard for SSH)
         user: Optional user name to filter keys by
@@ -736,9 +746,12 @@ def load_security_key_keys(
             "pip install fido2"
         )
 
+    # Convert SecureString to str for asyncssh
+    pin_str = str(pin) if isinstance(pin, SecureString) else pin
+
     try:
         return asyncssh.load_resident_keys(
-            pin=pin,
+            pin=pin_str,
             application=application,
             user=user,
             touch_required=touch_required,
@@ -753,7 +766,7 @@ def load_security_key_keys(
 
 def load_security_key_file(
     key_path: Path | str,
-    passphrase: str | None = None,
+    passphrase: str | SecureString | None = None,
 ) -> asyncssh.SSHKey:
     """
     Load an sk-* (security key) private key from file.
@@ -771,7 +784,7 @@ def load_security_key_file(
 
     Args:
         key_path: Path to the sk-* private key file
-        passphrase: Optional passphrase if the key file is encrypted
+        passphrase: Optional passphrase if the key file is encrypted (str or SecureString)
 
     Returns:
         Loaded SSH key
@@ -805,8 +818,13 @@ def load_security_key_file(
             reason="permission_denied",
         )
 
+    # Convert SecureString to str for asyncssh
+    passphrase_str: str | None = None
+    if passphrase is not None:
+        passphrase_str = str(passphrase) if isinstance(passphrase, SecureString) else passphrase
+
     try:
-        return asyncssh.read_private_key(str(key_path), passphrase=passphrase)
+        return asyncssh.read_private_key(str(key_path), passphrase=passphrase_str)
     except asyncssh.KeyImportError as e:
         error_msg = str(e).lower()
         if "passphrase" in error_msg or "decrypt" in error_msg:

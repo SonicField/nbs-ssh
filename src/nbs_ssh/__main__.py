@@ -21,6 +21,8 @@ import os
 import sys
 from pathlib import Path
 
+from nbs_ssh.secure_string import SecureString
+
 
 def cli_kbdint_callback(
     name: str,
@@ -211,6 +213,9 @@ async def run_command(args: argparse.Namespace) -> int:
         # Default to current user
         username = os.environ.get("USER", os.environ.get("USERNAME", "root"))
 
+    # Track secrets for eradication after use
+    secrets_to_eradicate: list[SecureString] = []
+
     # Build auth config
     auth_configs = []
 
@@ -222,7 +227,8 @@ async def run_command(args: argparse.Namespace) -> int:
         auth_configs.append(create_key_auth(key_path))
 
     if args.password:
-        password = getpass.getpass(f"Password for {username}@{host}: ")
+        password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
+        secrets_to_eradicate.append(password)
         auth_configs.append(create_password_auth(password))
 
     if getattr(args, 'keyboard_interactive', False):
@@ -239,13 +245,21 @@ async def run_command(args: argparse.Namespace) -> int:
                 "pip install python-pkcs11",
                 file=sys.stderr,
             )
+            # Eradicate any secrets collected so far
+            for secret in secrets_to_eradicate:
+                secret.eradicate()
             return 1
         # Prompt for PIN if not provided
-        pin = getpass.getpass("PKCS#11 PIN (or press Enter for no PIN): ")
+        pin_str = getpass.getpass("PKCS#11 PIN (or press Enter for no PIN): ")
+        if pin_str:
+            pin = SecureString(pin_str)
+            secrets_to_eradicate.append(pin)
+        else:
+            pin = None
         auth_configs.append(
             create_pkcs11_auth(
                 provider=args.pkcs11_provider,
-                pin=pin if pin else None,
+                pin=pin,
             )
         )
 
@@ -266,7 +280,8 @@ async def run_command(args: argparse.Namespace) -> int:
 
         # If still nothing, fall back to password (with keyboard-interactive as backup)
         if not auth_configs:
-            password = getpass.getpass(f"Password for {username}@{host}: ")
+            password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
+            secrets_to_eradicate.append(password)
             auth_configs.append(create_password_auth(password))
             # Also add keyboard-interactive for 2FA scenarios
             auth_configs.append(
@@ -322,6 +337,10 @@ async def run_command(args: argparse.Namespace) -> int:
         exit_code = 1
 
     finally:
+        # Eradicate all secrets (passwords, PINs) from memory
+        for secret in secrets_to_eradicate:
+            secret.eradicate()
+
         # Print events if requested
         if event_collector and args.events:
             for event in event_collector.events:

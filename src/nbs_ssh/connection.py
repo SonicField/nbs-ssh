@@ -64,6 +64,16 @@ from nbs_ssh.config import SSHConfig, SSHHostConfig
 from nbs_ssh.keepalive import KeepaliveConfig
 from nbs_ssh.platform import get_default_key_paths
 from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
+from nbs_ssh.secure_string import SecureString
+
+
+def _to_str(value: str | SecureString | None) -> str | None:
+    """Convert SecureString to str for asyncssh compatibility."""
+    if value is None:
+        return None
+    if isinstance(value, SecureString):
+        return str(value)
+    return value
 
 
 # Re-export for backwards compatibility
@@ -645,13 +655,13 @@ class SSHConnection:
             options["known_hosts"] = self._known_hosts
 
         if auth_config.method == AuthMethod.PASSWORD:
-            options["password"] = auth_config.password
+            options["password"] = _to_str(auth_config.password)
             options["client_keys"] = []  # Disable key auth
 
         elif auth_config.method == AuthMethod.PRIVATE_KEY:
             assert auth_config.key_path is not None
             # Load key with our error handling
-            key = load_private_key(auth_config.key_path, auth_config.passphrase)
+            key = load_private_key(auth_config.key_path, _to_str(auth_config.passphrase))
             options["client_keys"] = [key]
             options["password"] = None  # Disable password auth
 
@@ -697,7 +707,7 @@ class SSHConnection:
             assert auth_config.pkcs11_provider is not None
             pkcs11_keys = load_pkcs11_keys(
                 provider=auth_config.pkcs11_provider,
-                pin=auth_config.pkcs11_pin,
+                pin=_to_str(auth_config.pkcs11_pin),
                 token_label=auth_config.pkcs11_token_label,
                 token_serial=auth_config.pkcs11_token_serial,
                 key_label=auth_config.pkcs11_key_label,
@@ -1181,7 +1191,8 @@ class _KbdintSSHClient(asyncssh.SSHClient):
 
         # Otherwise, use password for all prompts
         if self._auth_config.password is not None:
-            return [self._auth_config.password] * len(prompts)
+            password_str = _to_str(self._auth_config.password)
+            return [password_str] * len(prompts)
 
         # No way to respond - cancel auth
         return None
