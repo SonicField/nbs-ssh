@@ -1485,6 +1485,24 @@ class _CombinedSSHClient(asyncssh.SSHClient):
 
         return False
 
+    def validate_host_ca_key(
+        self,
+        host: str,
+        addr: tuple[str, int],
+        port: int,
+        key: asyncssh.SSHKey,
+    ) -> bool:
+        """Validate the server's host CA key (for certificate-based host auth).
+
+        Enterprise environments often use CA-signed host certificates.
+        For now, we accept CA keys to maintain compatibility with such environments.
+        Future work: proper CA verification against known CA keys.
+        """
+        # Store the key for later use
+        self._server_key = key
+        self._result = HostKeyResult.TRUSTED
+        return True
+
     # Keyboard-interactive methods
     def kbdint_auth_requested(self) -> str | None:
         """Called when server requests keyboard-interactive auth."""
