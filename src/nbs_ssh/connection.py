@@ -324,6 +324,9 @@ class SSHConnection:
         proxy_command: str | None = None,
         use_ssh_config: bool = True,
         ssh_config: SSHConfig | None = None,
+        agent_forwarding: bool = False,
+        x11_forwarding: bool = False,
+        compression: bool = False,
     ) -> None:
         """
         Initialise SSH connection parameters.
@@ -361,6 +364,9 @@ class SSHConnection:
                            already be expanded. Takes precedence over proxy_jump.
             use_ssh_config: Whether to read ~/.ssh/config and /etc/ssh/ssh_config
             ssh_config: Pre-loaded SSHConfig object (if None, loads default configs)
+            agent_forwarding: Enable SSH agent forwarding (like ssh -A)
+            x11_forwarding: Enable X11 forwarding (like ssh -X/-Y)
+            compression: Enable compression (like ssh -C)
         """
         # Preconditions
         assert host, "Host must be specified"
@@ -466,6 +472,11 @@ class SSHConnection:
         # Timing tracking for evidence bundles
         self._timing = TimingInfo()
         self._last_error_context: ErrorContext | None = None
+
+        # Extended connection options (OpenSSH compatibility)
+        self._agent_forwarding = agent_forwarding
+        self._x11_forwarding = x11_forwarding
+        self._compression = compression
 
     def _build_auth_configs(
         self,
@@ -691,6 +702,14 @@ class SSHConnection:
         # Add keepalive options if configured
         if self._keepalive is not None:
             options.update(self._keepalive.to_asyncssh_options())
+
+        # Add extended connection options (OpenSSH compatibility)
+        if self._agent_forwarding:
+            options["agent_forwarding"] = True
+        if self._x11_forwarding:
+            options["x11_forwarding"] = True
+        if self._compression:
+            options["compression_algs"] = ["zlib@openssh.com", "zlib"]
 
         # Add ProxyCommand socket if configured (takes precedence over ProxyJump)
         if self._proxy_process is not None:
@@ -927,12 +946,15 @@ class SSHConnection:
 
         self._emitter.close()
 
-    async def exec(self, command: str) -> ExecResult:
+    async def exec(self, command: str, term_type: str | None = None) -> ExecResult:
         """
         Execute a command on the remote host.
 
         Args:
             command: The command to execute
+            term_type: Terminal type for pseudo-tty allocation (e.g., 'xterm-256color').
+                       If None, no PTY is allocated. Use this for commands that
+                       require a TTY (like ssh -t).
 
         Returns:
             ExecResult with stdout, stderr, and exit_code
@@ -942,7 +964,7 @@ class SSHConnection:
 
         with self._emitter.timed_event(EventType.EXEC, command=command) as event_data:
             try:
-                result = await self._conn.run(command, check=False)
+                result = await self._conn.run(command, check=False, term_type=term_type)
 
                 exit_code = result.exit_status if result.exit_status is not None else -1
                 stdout = result.stdout or ""
@@ -951,6 +973,8 @@ class SSHConnection:
                 event_data["exit_code"] = exit_code
                 event_data["stdout_len"] = len(stdout)
                 event_data["stderr_len"] = len(stderr)
+                if term_type is not None:
+                    event_data["term_type"] = term_type
 
                 return ExecResult(
                     stdout=stdout,

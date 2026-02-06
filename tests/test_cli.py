@@ -803,3 +803,208 @@ class TestForwardingHelpOutput:
         assert "local-forward" in result.stdout
         assert "remote-forward" in result.stdout
         assert "dynamic-forward" in result.stdout
+
+
+class TestExtendedCLIOptions:
+    """Tests for extended OpenSSH-compatible CLI options."""
+
+    def test_forward_agent_arg(self) -> None:
+        """Test -A argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-A", "host.example.com"])
+
+        assert args.forward_agent is True
+
+    def test_compress_arg(self) -> None:
+        """Test -C argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-C", "host.example.com"])
+
+        assert args.compress is True
+
+    def test_forward_x11_arg(self) -> None:
+        """Test -X argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-X", "host.example.com"])
+
+        assert args.forward_x11 is True
+
+    def test_forward_x11_trusted_arg(self) -> None:
+        """Test -Y argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-Y", "host.example.com"])
+
+        assert args.forward_x11_trusted is True
+
+    def test_force_tty_arg(self) -> None:
+        """Test -t argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-t", "host.example.com", "command"])
+
+        assert args.force_tty is True
+
+    def test_disable_tty_arg(self) -> None:
+        """Test -T argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-T", "host.example.com", "command"])
+
+        assert args.disable_tty is True
+
+    def test_quiet_arg(self) -> None:
+        """Test -q argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-q", "host.example.com"])
+
+        assert args.quiet is True
+
+    def test_combined_extended_options(self) -> None:
+        """Test combining multiple extended options."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args([
+            "-A", "-C", "-X", "-t", "-q",
+            "host.example.com", "command",
+        ])
+
+        assert args.forward_agent is True
+        assert args.compress is True
+        assert args.forward_x11 is True
+        assert args.force_tty is True
+        assert args.quiet is True
+
+    def test_defaults_are_false(self) -> None:
+        """Test that extended options default to False."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["host.example.com"])
+
+        assert args.forward_agent is False
+        assert args.compress is False
+        assert args.forward_x11 is False
+        assert args.forward_x11_trusted is False
+        assert args.force_tty is False
+        assert args.disable_tty is False
+        assert args.quiet is False
+
+
+class TestExtendedOptionsHelpOutput:
+    """Tests for extended options in help output."""
+
+    def test_help_shows_extended_options(self) -> None:
+        """Test --help shows extended OpenSSH options."""
+        result = subprocess.run(
+            [sys.executable, "-m", "nbs_ssh", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+            env={
+                **subprocess.os.environ,
+                "PYTHONPATH": str(Path(__file__).parent.parent / "src"),
+            },
+        )
+
+        assert result.returncode == 0
+        assert "-A" in result.stdout
+        assert "-C" in result.stdout
+        assert "-X" in result.stdout
+        assert "-Y" in result.stdout
+        assert "-t" in result.stdout
+        assert "-T" in result.stdout
+        assert "-q" in result.stdout
+        assert "agent forwarding" in result.stdout.lower()
+        assert "compression" in result.stdout.lower()
+        assert "x11" in result.stdout.lower()
+
+
+@pytest.mark.asyncio
+async def test_extended_options_passed_to_connection() -> None:
+    """
+    Test that extended options are passed to SSHConnection.
+    """
+    import argparse
+    from unittest.mock import patch, MagicMock
+
+    from nbs_ssh.__main__ import run_command
+
+    captured_options = {}
+
+    class MockConnection:
+        def __init__(self, **kwargs):
+            captured_options.update(kwargs)
+            # Mock the internal connection for ForwardManager
+            self._conn = MagicMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def exec(self, command, term_type=None):
+            from nbs_ssh.connection import ExecResult
+            captured_options["exec_term_type"] = term_type
+            return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+    args = argparse.Namespace(
+        target="test@localhost",
+        command="echo hello",
+        port=22,
+        login=None,
+        identity=None,
+        password=True,
+        keyboard_interactive=False,
+        pkcs11_provider=None,
+        events=False,
+        no_host_check=True,
+        strict_host_key_checking="no",
+        timeout=10.0,
+        proxy_jump=None,
+        proxy_command=None,
+        local_forward=None,
+        remote_forward=None,
+        dynamic_forward=None,
+        no_command=False,
+        verbose=0,
+        forward_agent=True,
+        compress=True,
+        forward_x11=True,
+        forward_x11_trusted=False,
+        force_tty=True,
+        disable_tty=False,
+        quiet=False,
+    )
+
+    import nbs_ssh.__main__ as cli_module
+
+    original_getpass = cli_module.getpass.getpass
+    cli_module.getpass.getpass = lambda prompt: "test"
+
+    try:
+        with patch("nbs_ssh.SSHConnection", MockConnection):
+            await run_command(args)
+
+        # Verify extended options were passed to connection
+        assert captured_options.get("agent_forwarding") is True
+        assert captured_options.get("compression") is True
+        assert captured_options.get("x11_forwarding") is True
+        # Verify term_type was passed to exec
+        assert captured_options.get("exec_term_type") is not None
+    finally:
+        cli_module.getpass.getpass = original_getpass
+

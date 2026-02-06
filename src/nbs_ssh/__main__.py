@@ -383,6 +383,54 @@ def create_parser() -> argparse.ArgumentParser:
              "--verbose, --verbose --verbose, etc.)",
     )
 
+    # Extended OpenSSH-compatible options
+    parser.add_argument(
+        "-A", "--forward-agent",
+        action="store_true",
+        dest="forward_agent",
+        help="Enable SSH agent forwarding",
+    )
+
+    parser.add_argument(
+        "-C", "--compress",
+        action="store_true",
+        help="Enable compression",
+    )
+
+    parser.add_argument(
+        "-X", "--forward-x11",
+        action="store_true",
+        dest="forward_x11",
+        help="Enable X11 forwarding",
+    )
+
+    parser.add_argument(
+        "-Y", "--forward-x11-trusted",
+        action="store_true",
+        dest="forward_x11_trusted",
+        help="Enable trusted X11 forwarding",
+    )
+
+    parser.add_argument(
+        "-t", "--force-tty",
+        action="store_true",
+        dest="force_tty",
+        help="Force pseudo-tty allocation",
+    )
+
+    parser.add_argument(
+        "-T", "--disable-tty",
+        action="store_true",
+        dest="disable_tty",
+        help="Disable pseudo-tty allocation",
+    )
+
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Quiet mode (suppress warnings)",
+    )
+
     parser.add_argument(
         "-V", "--version",
         action="version",
@@ -418,9 +466,19 @@ async def run_command(args: argparse.Namespace) -> int:
     )
     from nbs_ssh.events import EventCollector
 
-    # Set up logging based on verbosity
-    verbose = getattr(args, 'verbose', 0)
-    if verbose > 0:
+    # Set up logging based on verbosity and quiet mode
+    quiet = getattr(args, 'quiet', False)
+    verbose = getattr(args, 'verbose', 0) if not quiet else 0
+
+    if quiet:
+        # Suppress warnings - only show errors
+        logging.basicConfig(
+            level=logging.ERROR,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            stream=sys.stderr,
+        )
+        logging.getLogger("asyncssh").setLevel(logging.ERROR)
+    elif verbose > 0:
         level = logging.DEBUG if verbose >= 2 else logging.INFO
         logging.basicConfig(
             level=level,
@@ -558,6 +616,9 @@ async def run_command(args: argparse.Namespace) -> int:
             connect_timeout=args.timeout,
             proxy_jump=getattr(args, 'proxy_jump', None),
             proxy_command=proxy_command,
+            agent_forwarding=getattr(args, 'forward_agent', False),
+            x11_forwarding=getattr(args, 'forward_x11', False) or getattr(args, 'forward_x11_trusted', False),
+            compression=getattr(args, 'compress', False),
         ) as conn:
             # Set up port forwarding if requested
             forward_manager = ForwardManager(emitter=event_collector)
@@ -658,7 +719,21 @@ async def run_command(args: argparse.Namespace) -> int:
                         await handle.close()
                 exit_code = 0
             elif args.command:
-                result = await conn.exec(args.command)
+                # Determine terminal type based on -t/-T flags
+                force_tty = getattr(args, 'force_tty', False)
+                disable_tty = getattr(args, 'disable_tty', False)
+
+                if force_tty:
+                    # -t: Force PTY allocation
+                    term_type = os.environ.get("TERM", "xterm-256color")
+                elif disable_tty:
+                    # -T: Explicitly disable PTY
+                    term_type = None
+                else:
+                    # Default: no PTY for command execution
+                    term_type = None
+
+                result = await conn.exec(args.command, term_type=term_type)
 
                 # Output stdout to stdout, stderr to stderr
                 if result.stdout:
