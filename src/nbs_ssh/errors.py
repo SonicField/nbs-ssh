@@ -33,6 +33,7 @@ class DisconnectReason(str, Enum):
     Used in DISCONNECT events to classify why a connection ended.
     """
     NORMAL = "normal"
+    USER_ESCAPE = "user_escape"
     KEEPALIVE_TIMEOUT = "keepalive_timeout"
     PROGRESS_TIMEOUT = "progress_timeout"
     NETWORK_ERROR = "network_error"

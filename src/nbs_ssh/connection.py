@@ -71,6 +71,7 @@ from nbs_ssh.platform import get_default_key_paths, get_known_hosts_read_paths, 
 from nbs_ssh.events import EventCollector, EventEmitter, EventType
 from nbs_ssh.evidence import AlgorithmInfo, EvidenceBundle, HostInfo, TimingInfo
 from nbs_ssh.config import SSHConfig, SSHHostConfig
+from nbs_ssh.escape import DisconnectRequested, EscapeHandler, SuspendRequested
 from nbs_ssh.keepalive import KeepaliveConfig
 from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
 from nbs_ssh.secure_string import SecureString
@@ -1016,7 +1017,7 @@ class SSHConnection:
         # Note: process is a coroutine, we need to handle it in the iterator
         return _StreamExecResultFactory(process, self._emitter, command)
 
-    async def shell(self) -> int:
+    async def shell(self, escape_char: str = "~") -> int:
         """
         Open an interactive shell session with PTY.
 
@@ -1025,7 +1026,12 @@ class SSHConnection:
         - Puts the local terminal in raw mode
         - Forwards stdin to remote, remote stdout/stderr to local
         - Handles terminal resize (SIGWINCH)
+        - Supports OpenSSH-style escape sequences (~., ~?, etc.)
         - Restores terminal on exit (even on crash)
+
+        Args:
+            escape_char: Escape character for local commands (default: ~).
+                         Use 'none' to disable escape sequences.
 
         Returns:
             Exit code from the shell session
@@ -1086,10 +1092,13 @@ class SSHConnection:
 
             old_sigwinch = signal.signal(signal.SIGWINCH, handle_sigwinch)
 
+            # Set up escape sequence handler
+            escape_handler = EscapeHandler(escape_char=escape_char)
+
             try:
                 # Run the interactive session
                 exit_code = await self._run_shell_session(
-                    process, stdin_fd, resize_event
+                    process, stdin_fd, resize_event, escape_handler
                 )
             finally:
                 # Restore SIGWINCH handler
@@ -1123,6 +1132,7 @@ class SSHConnection:
         process: asyncssh.SSHClientProcess,
         stdin_fd: int,
         resize_event: asyncio.Event,
+        escape_handler: EscapeHandler,
     ) -> int:
         """
         Run the interactive shell session loop.
@@ -1131,15 +1141,17 @@ class SSHConnection:
         - Reading from stdin and sending to remote
         - Reading from remote and writing to stdout
         - Terminal resize events
+        - Escape sequence processing
         """
         loop = asyncio.get_event_loop()
 
         # Create tasks for reading/writing
         done = False
+        disconnect_requested = False
 
         async def read_stdin() -> None:
             """Read from local stdin and send to remote."""
-            nonlocal done
+            nonlocal done, disconnect_requested
             while not done:
                 try:
                     # Use executor for blocking stdin read
@@ -1147,7 +1159,18 @@ class SSHConnection:
                         None, lambda: os.read(stdin_fd, 1024)
                     )
                     if data:
-                        process.stdin.write(data.decode("utf-8", errors="replace"))
+                        # Process through escape handler
+                        try:
+                            result = escape_handler.process_input(data)
+                            if result is not None:
+                                process.stdin.write(result.decode("utf-8", errors="replace"))
+                        except DisconnectRequested:
+                            disconnect_requested = True
+                            done = True
+                            break
+                        except SuspendRequested:
+                            # Send SIGTSTP to ourselves
+                            os.kill(os.getpid(), signal.SIGTSTP)
                     else:
                         # EOF on stdin
                         process.stdin.write_eof()
@@ -1205,6 +1228,10 @@ class SSHConnection:
                     await task
                 except asyncio.CancelledError:
                     pass
+
+        # Set disconnect reason if user requested it
+        if disconnect_requested:
+            self._disconnect_reason = DisconnectReason.USER_ESCAPE
 
         return process.exit_status or 0
 

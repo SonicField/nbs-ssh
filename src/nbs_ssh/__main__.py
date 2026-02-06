@@ -426,6 +426,16 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "-e", "--escape-char",
+        metavar="CHAR",
+        default="~",
+        dest="escape_char",
+        help="Escape character for session commands (default: ~). "
+             "Use 'none' to disable escape sequences. "
+             "Supports control notation (e.g., ^A for Ctrl-A).",
+    )
+
+    parser.add_argument(
         "-q", "--quiet",
         action="store_true",
         help="Quiet mode (suppress warnings)",
@@ -829,8 +839,10 @@ async def run_command(args: argparse.Namespace) -> int:
                     await handle.close()
             else:
                 # No command - open interactive shell
+                # Get escape character from args
+                escape_char = getattr(args, 'escape_char', '~')
                 try:
-                    exit_code = await conn.shell()
+                    exit_code = await conn.shell(escape_char=escape_char)
                 except RuntimeError as e:
                     # Not a TTY - just connect and print message
                     print(f"Connected to {username}@{host}:{args.port}", file=sys.stderr)

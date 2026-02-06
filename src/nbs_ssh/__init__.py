@@ -36,6 +36,12 @@ from nbs_ssh.automation import (
 )
 from nbs_ssh.config import SSHConfig, SSHHostConfig, get_ssh_config
 from nbs_ssh.connection import ExecResult, SSHConnection, StreamEvent, StreamExecResult
+from nbs_ssh.escape import (
+    DisconnectRequested,
+    EscapeHandler,
+    SuspendRequested,
+    parse_escape_char,
+)
 from nbs_ssh.errors import (
     AgentError,
     AuthenticationError,
@@ -153,6 +159,11 @@ __all__ = [
     "AgentError",
     "ErrorContext",
     "DisconnectReason",
+    # Escape Sequences
+    "EscapeHandler",
+    "DisconnectRequested",
+    "SuspendRequested",
+    "parse_escape_char",
     # Host Key
     "HostKeyPolicy",
     "HostKeyResult",
