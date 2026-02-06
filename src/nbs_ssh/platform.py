@@ -52,6 +52,74 @@ def get_known_hosts_path() -> Path:
     return get_ssh_dir() / "known_hosts"
 
 
+def get_system_known_hosts_path() -> Path:
+    """
+    Get the system-wide known_hosts file path.
+
+    Returns:
+        Path to system known_hosts file (/etc/ssh/ssh_known_hosts on Unix)
+    """
+    if is_windows():
+        # Windows OpenSSH uses ProgramData
+        program_data = os.environ.get("ProgramData", "C:\\ProgramData")
+        return Path(program_data) / "ssh" / "ssh_known_hosts"
+    else:
+        return Path("/etc/ssh/ssh_known_hosts")
+
+
+def get_known_hosts_read_paths() -> list[Path]:
+    """
+    Get known_hosts files that exist and should be checked for host keys.
+
+    OpenSSH checks both user and system known_hosts files. This function
+    returns only the files that actually exist on disk, in the order
+    they should be checked (user file first, then system file).
+
+    Platform-specific paths:
+    - Linux/macOS: ~/.ssh/known_hosts, /etc/ssh/ssh_known_hosts
+    - Windows: %USERPROFILE%\\.ssh\\known_hosts, %PROGRAMDATA%\\ssh\\ssh_known_hosts
+
+    Returns:
+        List of existing known_hosts file paths (user first, then system)
+    """
+    paths: list[Path] = []
+
+    # User known_hosts takes precedence
+    user_path = get_known_hosts_path()
+    if user_path.exists() and user_path.is_file():
+        paths.append(user_path)
+
+    # Then system known_hosts
+    system_path = get_system_known_hosts_path()
+    if system_path.exists() and system_path.is_file():
+        paths.append(system_path)
+
+    return paths
+
+
+def get_known_hosts_write_path() -> Path:
+    """
+    Get the path for writing new known_hosts entries.
+
+    Returns the user's known_hosts file path. This is always the user
+    file (never system, which requires root/admin privileges).
+
+    Creates the parent directory (~/.ssh/) with mode 0o700 if it
+    doesn't exist.
+
+    Returns:
+        Path to user's known_hosts file (may not exist yet)
+    """
+    user_path = get_known_hosts_path()
+
+    # Ensure parent directory exists with correct permissions
+    ssh_dir = user_path.parent
+    if not ssh_dir.exists():
+        ssh_dir.mkdir(mode=0o700, parents=True)
+
+    return user_path
+
+
 def get_config_path() -> Path:
     """
     Get the platform-appropriate SSH config file path.

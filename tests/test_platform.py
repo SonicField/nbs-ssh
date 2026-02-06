@@ -23,10 +23,13 @@ from nbs_ssh.platform import (
     get_agent_available,
     get_default_key_paths,
     get_known_hosts_path,
+    get_known_hosts_read_paths,
+    get_known_hosts_write_path,
     get_openssh_agent_available,
     get_pageant_available,
     get_putty_key_paths,
     get_ssh_dir,
+    get_system_known_hosts_path,
     is_windows,
     validate_path,
 )
@@ -94,6 +97,152 @@ class TestSSHDirectory:
         result = get_known_hosts_path()
         assert result.name == "known_hosts"
         assert result.parent == get_ssh_dir()
+
+
+# ---------------------------------------------------------------------------
+# Known Hosts Path Tests
+# ---------------------------------------------------------------------------
+
+class TestKnownHostsPaths:
+    """Test known_hosts path discovery functions."""
+
+    def test_get_system_known_hosts_path_unix(self) -> None:
+        """On Unix, system known_hosts is in /etc/ssh/."""
+        with patch("nbs_ssh.platform.is_windows", return_value=False):
+            result = get_system_known_hosts_path()
+            assert result == Path("/etc/ssh/ssh_known_hosts")
+
+    def test_get_system_known_hosts_path_windows(self) -> None:
+        """On Windows, system known_hosts uses ProgramData."""
+        with patch("nbs_ssh.platform.is_windows", return_value=True):
+            with patch.dict(os.environ, {"ProgramData": "C:\\ProgramData"}):
+                result = get_system_known_hosts_path()
+                assert result == Path("C:\\ProgramData") / "ssh" / "ssh_known_hosts"
+
+    def test_get_known_hosts_read_paths_returns_list(self) -> None:
+        """get_known_hosts_read_paths() returns a list of Paths."""
+        result = get_known_hosts_read_paths()
+        assert isinstance(result, list)
+        assert all(isinstance(p, Path) for p in result)
+
+    def test_get_known_hosts_read_paths_only_existing(self, tmp_path: Path) -> None:
+        """get_known_hosts_read_paths() returns only files that exist."""
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        user_known_hosts = ssh_dir / "known_hosts"
+        user_known_hosts.write_text("# test")
+
+        with patch("nbs_ssh.platform.get_known_hosts_path", return_value=user_known_hosts):
+            with patch("nbs_ssh.platform.get_system_known_hosts_path",
+                       return_value=tmp_path / "nonexistent"):
+                result = get_known_hosts_read_paths()
+
+        assert len(result) == 1
+        assert result[0] == user_known_hosts
+
+    def test_get_known_hosts_read_paths_user_first(self, tmp_path: Path) -> None:
+        """get_known_hosts_read_paths() returns user file before system file."""
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        etc_dir = tmp_path / "etc" / "ssh"
+        etc_dir.mkdir(parents=True)
+
+        user_known_hosts = ssh_dir / "known_hosts"
+        user_known_hosts.write_text("# user")
+        system_known_hosts = etc_dir / "ssh_known_hosts"
+        system_known_hosts.write_text("# system")
+
+        with patch("nbs_ssh.platform.get_known_hosts_path", return_value=user_known_hosts):
+            with patch("nbs_ssh.platform.get_system_known_hosts_path",
+                       return_value=system_known_hosts):
+                result = get_known_hosts_read_paths()
+
+        assert len(result) == 2
+        assert result[0] == user_known_hosts
+        assert result[1] == system_known_hosts
+
+    def test_get_known_hosts_read_paths_empty_when_none_exist(self, tmp_path: Path) -> None:
+        """get_known_hosts_read_paths() returns empty list when no files exist."""
+        with patch("nbs_ssh.platform.get_known_hosts_path",
+                   return_value=tmp_path / "nonexistent1"):
+            with patch("nbs_ssh.platform.get_system_known_hosts_path",
+                       return_value=tmp_path / "nonexistent2"):
+                result = get_known_hosts_read_paths()
+
+        assert result == []
+
+    def test_get_known_hosts_read_paths_skips_directories(self, tmp_path: Path) -> None:
+        """get_known_hosts_read_paths() skips paths that are directories."""
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        # Create known_hosts as a directory, not a file
+        known_hosts_dir = ssh_dir / "known_hosts"
+        known_hosts_dir.mkdir()
+
+        with patch("nbs_ssh.platform.get_known_hosts_path", return_value=known_hosts_dir):
+            with patch("nbs_ssh.platform.get_system_known_hosts_path",
+                       return_value=tmp_path / "nonexistent"):
+                result = get_known_hosts_read_paths()
+
+        assert result == []
+
+    def test_get_known_hosts_write_path_returns_path(self) -> None:
+        """get_known_hosts_write_path() returns a Path object."""
+        result = get_known_hosts_write_path()
+        assert isinstance(result, Path)
+        assert result.name == "known_hosts"
+
+    def test_get_known_hosts_write_path_creates_parent_dir(self, tmp_path: Path) -> None:
+        """get_known_hosts_write_path() creates parent directory if needed."""
+        ssh_dir = tmp_path / "new_user" / ".ssh"
+        known_hosts = ssh_dir / "known_hosts"
+
+        assert not ssh_dir.exists()
+
+        with patch("nbs_ssh.platform.get_known_hosts_path", return_value=known_hosts):
+            result = get_known_hosts_write_path()
+
+        assert result == known_hosts
+        assert ssh_dir.exists()
+        assert ssh_dir.is_dir()
+
+    def test_get_known_hosts_write_path_sets_dir_permissions(self, tmp_path: Path) -> None:
+        """get_known_hosts_write_path() creates directory with mode 0o700."""
+        ssh_dir = tmp_path / "perm_test" / ".ssh"
+        known_hosts = ssh_dir / "known_hosts"
+
+        with patch("nbs_ssh.platform.get_known_hosts_path", return_value=known_hosts):
+            get_known_hosts_write_path()
+
+        # Check permissions (masking out any umask effects on non-permission bits)
+        mode = ssh_dir.stat().st_mode & 0o777
+        assert mode == 0o700
+
+    def test_get_known_hosts_write_path_existing_dir(self, tmp_path: Path) -> None:
+        """get_known_hosts_write_path() works when directory already exists."""
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir(mode=0o755)
+        known_hosts = ssh_dir / "known_hosts"
+
+        with patch("nbs_ssh.platform.get_known_hosts_path", return_value=known_hosts):
+            result = get_known_hosts_write_path()
+
+        assert result == known_hosts
+
+    def test_get_known_hosts_write_path_file_need_not_exist(self, tmp_path: Path) -> None:
+        """get_known_hosts_write_path() returns path even if file doesn't exist."""
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        known_hosts = ssh_dir / "known_hosts"
+
+        assert not known_hosts.exists()
+
+        with patch("nbs_ssh.platform.get_known_hosts_path", return_value=known_hosts):
+            result = get_known_hosts_write_path()
+
+        assert result == known_hosts
+        # File itself should still not exist (just the path is returned)
+        assert not known_hosts.exists()
 
 
 # ---------------------------------------------------------------------------
