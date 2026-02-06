@@ -290,7 +290,13 @@ async def run_command(args: argparse.Namespace) -> int:
 
     # Set up event collection if --events
     event_collector = EventCollector() if args.events else None
-    known_hosts = None if args.no_host_check else ()
+
+    # Host key verification: use ~/.ssh/known_hosts by default (like OpenSSH)
+    # --no-host-check explicitly disables verification by passing None
+    if args.no_host_check:
+        known_hosts = None
+    else:
+        known_hosts = Path("~/.ssh/known_hosts").expanduser()
 
     # Expand tokens in proxy_command if provided
     proxy_command = getattr(args, 'proxy_command', None)

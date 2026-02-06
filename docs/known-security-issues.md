@@ -35,11 +35,25 @@ This document responds to the security audit in [Issue #4](https://github.com/So
 
 ### CRIT-1: known_hosts=None Bypasses Host Key Verification
 
-**Status: ACCEPTED**
+**Status: ACCEPTED (with CLI fix)**
 
-When `known_hosts=None` is passed, host key verification is disabled. This enables MITM attacks.
+When `known_hosts=None` is passed to `SSHConnection`, host key verification is disabled. This enables MITM attacks.
 
-**Rationale:** nbs-ssh is designed for testing and development where:
+**CLI Behaviour (FIXED):** The CLI now uses `~/.ssh/known_hosts` by default, matching OpenSSH behaviour. Use `--no-host-check` to explicitly disable verification.
+
+```bash
+# Default: uses ~/.ssh/known_hosts (secure)
+python -m nbs_ssh user@host command
+
+# Explicit disable (for testing)
+python -m nbs_ssh --no-host-check user@host command
+```
+
+**Library Behaviour:** When using `SSHConnection` directly, you control `known_hosts`:
+- Pass a path to enable verification: `known_hosts="~/.ssh/known_hosts"`
+- Pass `None` to disable: `known_hosts=None`
+
+**Rationale for library flexibility:** nbs-ssh is designed for testing and development where:
 - Mock servers have dynamically generated keys
 - Test environments don't have stable host keys
 - The user explicitly opts out of verification

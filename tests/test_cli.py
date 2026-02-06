@@ -442,3 +442,154 @@ async def test_cli_falls_back_to_password_when_no_keys() -> None:
         cli_module.getpass.getpass = original_getpass
         nbs_ssh.__main__.get_agent_available = get_agent_available
         nbs_ssh.__main__.get_default_key_paths = get_default_key_paths
+
+
+class TestKnownHostsDefault:
+    """Tests for known_hosts default behaviour (CRIT-1 fix)."""
+
+    def test_cli_uses_known_hosts_by_default(self) -> None:
+        """
+        Test CLI uses ~/.ssh/known_hosts by default (not None).
+
+        This is the fix for the bug where () was passed as default,
+        which is falsy and resulted in known_hosts=None (disabling verification).
+        """
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["host.example.com", "echo test"])
+
+        # no_host_check should be False by default
+        assert args.no_host_check is False
+
+    def test_no_host_check_flag_sets_true(self) -> None:
+        """Test --no-host-check flag sets no_host_check=True."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["--no-host-check", "host.example.com", "echo test"])
+
+        assert args.no_host_check is True
+
+    @pytest.mark.asyncio
+    async def test_known_hosts_default_path_is_used(self) -> None:
+        """
+        Test that run_command uses ~/.ssh/known_hosts path by default.
+
+        We patch SSHConnection to capture the known_hosts value.
+        """
+        import argparse
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from nbs_ssh.__main__ import run_command
+
+        captured_known_hosts = None
+
+        # Create a mock SSHConnection that captures known_hosts
+        class MockConnection:
+            def __init__(self, **kwargs):
+                nonlocal captured_known_hosts
+                captured_known_hosts = kwargs.get("known_hosts")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def exec(self, command):
+                from nbs_ssh.connection import ExecResult
+                return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+        args = argparse.Namespace(
+            target="test@localhost",
+            command="echo hello",
+            port=22,
+            login=None,
+            identity=None,
+            password=True,
+            keyboard_interactive=False,
+            pkcs11_provider=None,
+            events=False,
+            no_host_check=False,  # Default: should use ~/.ssh/known_hosts
+            timeout=10.0,
+            proxy_jump=None,
+            proxy_command=None,
+        )
+
+        import nbs_ssh.__main__ as cli_module
+        from nbs_ssh import SSHConnection
+
+        original_getpass = cli_module.getpass.getpass
+        cli_module.getpass.getpass = lambda prompt: "test"
+
+        try:
+            with patch.object(cli_module, "SSHConnection", MockConnection):
+                await run_command(args)
+
+            # known_hosts should be a Path to ~/.ssh/known_hosts
+            assert captured_known_hosts is not None
+            assert isinstance(captured_known_hosts, Path)
+            expected_path = Path("~/.ssh/known_hosts").expanduser()
+            assert captured_known_hosts == expected_path
+        finally:
+            cli_module.getpass.getpass = original_getpass
+
+    @pytest.mark.asyncio
+    async def test_no_host_check_passes_none(self) -> None:
+        """
+        Test that --no-host-check passes known_hosts=None to SSHConnection.
+        """
+        import argparse
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from nbs_ssh.__main__ import run_command
+
+        captured_known_hosts = "NOT_SET"  # Use sentinel to distinguish from None
+
+        class MockConnection:
+            def __init__(self, **kwargs):
+                nonlocal captured_known_hosts
+                captured_known_hosts = kwargs.get("known_hosts")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def exec(self, command):
+                from nbs_ssh.connection import ExecResult
+                return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+        args = argparse.Namespace(
+            target="test@localhost",
+            command="echo hello",
+            port=22,
+            login=None,
+            identity=None,
+            password=True,
+            keyboard_interactive=False,
+            pkcs11_provider=None,
+            events=False,
+            no_host_check=True,  # Should pass None to disable verification
+            timeout=10.0,
+            proxy_jump=None,
+            proxy_command=None,
+        )
+
+        import nbs_ssh.__main__ as cli_module
+
+        original_getpass = cli_module.getpass.getpass
+        cli_module.getpass.getpass = lambda prompt: "test"
+
+        try:
+            with patch.object(cli_module, "SSHConnection", MockConnection):
+                await run_command(args)
+
+            # known_hosts should be None when --no-host-check is used
+            assert captured_known_hosts is None
+        finally:
+            cli_module.getpass.getpass = original_getpass
