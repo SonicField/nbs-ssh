@@ -303,7 +303,7 @@ class SSHConnection:
         username: str | None = None,
         password: str | None = None,
         client_keys: Sequence[Path | str] | None = None,
-        known_hosts: Path | str | None = None,
+        known_hosts: list[Path | str] | Path | str | None = None,
         event_collector: EventCollector | None = None,
         event_log_path: Path | str | None = None,
         connect_timeout: float | None = None,
@@ -323,7 +323,10 @@ class SSHConnection:
             username: Username for authentication (defaults to SSH config or current user)
             password: Password for password auth (legacy, prefer auth=)
             client_keys: Paths to private keys (legacy, prefer auth=)
-            known_hosts: Path to known_hosts file (None to disable checking)
+            known_hosts: Path(s) to known_hosts file(s). Accepts a single path,
+                         a list of paths (for user + system files), or None to
+                         disable host key checking. AsyncSSH will check hosts
+                         against all provided files.
             event_collector: Optional collector for in-memory event capture
             event_log_path: Optional path for JSONL event log
             connect_timeout: Connection timeout in seconds (default 30, or from SSH config)
@@ -394,7 +397,14 @@ class SSHConnection:
         self._host = host
         self._port = port
         self._username = username
-        self._known_hosts = str(known_hosts) if known_hosts else None
+        # Normalise known_hosts to format asyncssh expects
+        # asyncssh accepts: None, string path, or list of string paths
+        if known_hosts is None:
+            self._known_hosts: list[str] | str | None = None
+        elif isinstance(known_hosts, list):
+            self._known_hosts = [str(p) for p in known_hosts]
+        else:
+            self._known_hosts = str(known_hosts)
         self._connect_timeout = connect_timeout
         self._keepalive = keepalive
         self._disconnect_reason = DisconnectReason.NORMAL

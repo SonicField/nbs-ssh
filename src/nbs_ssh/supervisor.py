@@ -141,7 +141,7 @@ class SSHSupervisor:
         username: str | None = None,
         password: str | None = None,
         client_keys: Sequence[Path | str] | None = None,
-        known_hosts: Path | str | None = None,
+        known_hosts: list[Path | str] | Path | str | None = None,
         event_collector: EventCollector | None = None,
         event_log_path: Path | str | None = None,
         connect_timeout: float = 30.0,
@@ -158,7 +158,8 @@ class SSHSupervisor:
             username: Username for authentication
             password: Password for password auth (legacy, prefer auth=)
             client_keys: Paths to private keys (legacy, prefer auth=)
-            known_hosts: Path to known_hosts file (None to disable checking)
+            known_hosts: Path(s) to known_hosts file(s). Accepts a single path,
+                         a list of paths, or None to disable host key checking.
             event_collector: Optional collector for in-memory event capture
             event_log_path: Optional path for JSONL event log
             connect_timeout: Connection timeout in seconds
