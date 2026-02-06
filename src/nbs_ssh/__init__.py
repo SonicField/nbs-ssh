@@ -51,6 +51,14 @@ from nbs_ssh.errors import (
     SSHConnectionError,
     SSHError,
 )
+from nbs_ssh.host_key import (
+    HostKeyChangedError,
+    HostKeyPolicy,
+    HostKeyResult,
+    HostKeyUnknownError,
+    HostKeyVerifier,
+    get_key_fingerprint,
+)
 from nbs_ssh.events import Event, EventCollector, EventEmitter, EventType
 from nbs_ssh.evidence import (
     AlgorithmInfo,
@@ -145,6 +153,13 @@ __all__ = [
     "AgentError",
     "ErrorContext",
     "DisconnectReason",
+    # Host Key
+    "HostKeyPolicy",
+    "HostKeyResult",
+    "HostKeyVerifier",
+    "HostKeyChangedError",
+    "HostKeyUnknownError",
+    "get_key_fingerprint",
     # Keepalive
     "KeepaliveConfig",
     "ProgressWatchdog",

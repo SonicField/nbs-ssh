@@ -35,34 +35,59 @@ This document responds to the security audit in [Issue #4](https://github.com/So
 
 ### CRIT-1: known_hosts=None Bypasses Host Key Verification
 
-**Status: ACCEPTED (with CLI fix)**
+**Status: FIXED**
 
-When `known_hosts=None` is passed to `SSHConnection`, host key verification is disabled. This enables MITM attacks.
+The library now includes comprehensive host key verification with OpenSSH-compatible learning.
 
-**CLI Behaviour (FIXED):** The CLI now uses `~/.ssh/known_hosts` by default, matching OpenSSH behaviour. Use `--no-host-check` to explicitly disable verification.
+**CLI Behaviour (FIXED):** The CLI now uses `--strict-host-key-checking=ask` by default, matching OpenSSH behaviour:
+- Unknown hosts prompt for user confirmation before adding to `~/.ssh/known_hosts`
+- Changed keys are rejected with a clear fingerprint comparison warning
+- Use `--no-host-check` or `--strict-host-key-checking=no` to explicitly disable verification
 
 ```bash
-# Default: uses ~/.ssh/known_hosts (secure)
+# Default: prompts for unknown hosts (secure, matches OpenSSH)
 python -m nbs_ssh user@host command
 
 # Explicit disable (for testing)
 python -m nbs_ssh --no-host-check user@host command
+
+# Accept new hosts automatically, reject changed
+python -m nbs_ssh --strict-host-key-checking=accept-new user@host command
+
+# Strict mode for scripts (reject unknown hosts)
+python -m nbs_ssh --strict-host-key-checking=yes user@host command
 ```
 
-**Library Behaviour:** When using `SSHConnection` directly, you control `known_hosts`:
-- Pass a path to enable verification: `known_hosts="~/.ssh/known_hosts"`
-- Pass `None` to disable: `known_hosts=None`
-
-**Rationale for library flexibility:** nbs-ssh is designed for testing and development where:
-- Mock servers have dynamically generated keys
-- Test environments don't have stable host keys
-- The user explicitly opts out of verification
-
-**Recommendation:** For production use, always specify a `known_hosts` path:
+**Library Behaviour:** When using `SSHConnection` directly, use `host_key_policy`:
 ```python
-async with SSHConnection(host, known_hosts="~/.ssh/known_hosts") as conn:
+from nbs_ssh import SSHConnection, HostKeyPolicy
+
+# STRICT: Reject unknown hosts (for scripts)
+async with SSHConnection(host, host_key_policy=HostKeyPolicy.STRICT) as conn:
+    ...
+
+# ASK: Prompt for unknown (requires callback)
+def on_unknown(host, port, key):
+    # Display fingerprint, prompt user
+    return user_approved
+
+async with SSHConnection(
+    host,
+    host_key_policy=HostKeyPolicy.ASK,
+    on_unknown_host_key=on_unknown
+) as conn:
+    ...
+
+# ACCEPT_NEW: Accept unknown, reject changed
+async with SSHConnection(host, host_key_policy=HostKeyPolicy.ACCEPT_NEW) as conn:
+    ...
+
+# INSECURE: Accept all (testing only)
+async with SSHConnection(host, host_key_policy=HostKeyPolicy.INSECURE) as conn:
     ...
 ```
+
+**Note:** Using `known_hosts=None` without `host_key_policy` still disables verification for backward compatibility.
 
 ---
 
@@ -257,7 +282,7 @@ The following are known testing limitations:
 
 | Gap | Reason | Impact |
 |-----|--------|--------|
-| Host key verification | Tests use mock server with dynamic keys | MITM scenarios untested |
+| ~~Host key verification~~ | ~~Tests use mock server with dynamic keys~~ | **FIXED** - Comprehensive tests added |
 | Malformed protocol data | Mock server is well-behaved | Parser robustness untested |
 | Fuzzing | Not implemented | Unknown edge cases |
 | Rekeying attacks | Not implemented | Session security untested |

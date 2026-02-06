@@ -474,23 +474,24 @@ class TestKnownHostsDefault:
     @pytest.mark.asyncio
     async def test_known_hosts_default_path_is_used(self) -> None:
         """
-        Test that run_command uses ~/.ssh/known_hosts path by default.
+        Test that run_command uses ASK policy by default.
 
-        We patch SSHConnection to capture the known_hosts value.
+        We patch SSHConnection to capture the host_key_policy value.
         """
         import argparse
         from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
         from nbs_ssh.__main__ import run_command
+        from nbs_ssh import HostKeyPolicy
 
-        captured_known_hosts = None
+        captured_policy = None
 
-        # Create a mock SSHConnection that captures known_hosts
+        # Create a mock SSHConnection that captures host_key_policy
         class MockConnection:
             def __init__(self, **kwargs):
-                nonlocal captured_known_hosts
-                captured_known_hosts = kwargs.get("known_hosts")
+                nonlocal captured_policy
+                captured_policy = kwargs.get("host_key_policy")
 
             async def __aenter__(self):
                 return self
@@ -512,47 +513,46 @@ class TestKnownHostsDefault:
             keyboard_interactive=False,
             pkcs11_provider=None,
             events=False,
-            no_host_check=False,  # Default: should use ~/.ssh/known_hosts
+            no_host_check=False,  # Default: should use ASK policy
+            strict_host_key_checking="ask",
             timeout=10.0,
             proxy_jump=None,
             proxy_command=None,
         )
 
         import nbs_ssh.__main__ as cli_module
-        from nbs_ssh import SSHConnection
 
         original_getpass = cli_module.getpass.getpass
         cli_module.getpass.getpass = lambda prompt: "test"
 
         try:
-            with patch.object(cli_module, "SSHConnection", MockConnection):
+            # Patch SSHConnection where it's imported inside run_command
+            with patch("nbs_ssh.SSHConnection", MockConnection):
                 await run_command(args)
 
-            # known_hosts should be a Path to ~/.ssh/known_hosts
-            assert captured_known_hosts is not None
-            assert isinstance(captured_known_hosts, Path)
-            expected_path = Path("~/.ssh/known_hosts").expanduser()
-            assert captured_known_hosts == expected_path
+            # host_key_policy should be ASK by default
+            assert captured_policy == HostKeyPolicy.ASK
         finally:
             cli_module.getpass.getpass = original_getpass
 
     @pytest.mark.asyncio
     async def test_no_host_check_passes_none(self) -> None:
         """
-        Test that --no-host-check passes known_hosts=None to SSHConnection.
+        Test that --no-host-check uses INSECURE policy.
         """
         import argparse
         from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
         from nbs_ssh.__main__ import run_command
+        from nbs_ssh import HostKeyPolicy
 
-        captured_known_hosts = "NOT_SET"  # Use sentinel to distinguish from None
+        captured_policy = "NOT_SET"  # Use sentinel to distinguish from None
 
         class MockConnection:
             def __init__(self, **kwargs):
-                nonlocal captured_known_hosts
-                captured_known_hosts = kwargs.get("known_hosts")
+                nonlocal captured_policy
+                captured_policy = kwargs.get("host_key_policy")
 
             async def __aenter__(self):
                 return self
@@ -574,7 +574,8 @@ class TestKnownHostsDefault:
             keyboard_interactive=False,
             pkcs11_provider=None,
             events=False,
-            no_host_check=True,  # Should pass None to disable verification
+            no_host_check=True,  # Should use INSECURE policy
+            strict_host_key_checking="ask",  # Overridden by no_host_check
             timeout=10.0,
             proxy_jump=None,
             proxy_command=None,
@@ -586,10 +587,11 @@ class TestKnownHostsDefault:
         cli_module.getpass.getpass = lambda prompt: "test"
 
         try:
-            with patch.object(cli_module, "SSHConnection", MockConnection):
+            # Patch SSHConnection where it's imported inside run_command
+            with patch("nbs_ssh.SSHConnection", MockConnection):
                 await run_command(args)
 
-            # known_hosts should be None when --no-host-check is used
-            assert captured_known_hosts is None
+            # host_key_policy should be INSECURE when --no-host-check is used
+            assert captured_policy == HostKeyPolicy.INSECURE
         finally:
             cli_module.getpass.getpass = original_getpass

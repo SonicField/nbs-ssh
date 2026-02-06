@@ -20,7 +20,7 @@ import time
 import tty
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Callable, Sequence
 
 import asyncssh
 
@@ -58,11 +58,20 @@ from nbs_ssh.errors import (
     SSHConnectionError,
     SSHError,
 )
+from nbs_ssh.host_key import (
+    HostKeyCapturingClient,
+    HostKeyChangedError,
+    HostKeyPolicy,
+    HostKeyResult,
+    HostKeyUnknownError,
+    HostKeyVerifier,
+    get_key_fingerprint,
+)
+from nbs_ssh.platform import get_default_key_paths, get_known_hosts_read_paths, get_known_hosts_write_path
 from nbs_ssh.events import EventCollector, EventEmitter, EventType
 from nbs_ssh.evidence import AlgorithmInfo, EvidenceBundle, HostInfo, TimingInfo
 from nbs_ssh.config import SSHConfig, SSHHostConfig
 from nbs_ssh.keepalive import KeepaliveConfig
-from nbs_ssh.platform import get_default_key_paths
 from nbs_ssh.proxy import ProxyCommandError, ProxyCommandProcess
 from nbs_ssh.secure_string import SecureString
 from nbs_ssh.validation import validate_hostname, validate_port, validate_username
@@ -304,6 +313,8 @@ class SSHConnection:
         password: str | None = None,
         client_keys: Sequence[Path | str] | None = None,
         known_hosts: list[Path | str] | Path | str | None = None,
+        host_key_policy: HostKeyPolicy | None = None,
+        on_unknown_host_key: Callable[[str, int, "asyncssh.SSHKey"], bool] | None = None,
         event_collector: EventCollector | None = None,
         event_log_path: Path | str | None = None,
         connect_timeout: float | None = None,
@@ -326,7 +337,17 @@ class SSHConnection:
             known_hosts: Path(s) to known_hosts file(s). Accepts a single path,
                          a list of paths (for user + system files), or None to
                          disable host key checking. AsyncSSH will check hosts
-                         against all provided files.
+                         against all provided files. When host_key_policy is set,
+                         this is used as the source for verification; if not set,
+                         platform defaults are used.
+            host_key_policy: Host key verification policy:
+                - STRICT: Reject unknown hosts (for scripts)
+                - ASK: Prompt for unknown hosts (requires on_unknown_host_key callback)
+                - ACCEPT_NEW: Accept and save unknown hosts silently
+                - INSECURE: Accept all (testing only, equivalent to known_hosts=None)
+                - None: Use AsyncSSH default behaviour with known_hosts parameter
+            on_unknown_host_key: Callback for ASK policy. Called with (host, port, key),
+                                 should return True to accept the key.
             event_collector: Optional collector for in-memory event capture
             event_log_path: Optional path for JSONL event log
             connect_timeout: Connection timeout in seconds (default 30, or from SSH config)
@@ -405,6 +426,13 @@ class SSHConnection:
             self._known_hosts = [str(p) for p in known_hosts]
         else:
             self._known_hosts = str(known_hosts)
+
+        # Host key verification settings
+        self._host_key_policy = host_key_policy
+        self._on_unknown_host_key = on_unknown_host_key
+        self._host_key_verifier: HostKeyVerifier | None = None
+        self._host_key_client: HostKeyCapturingClient | None = None
+
         self._connect_timeout = connect_timeout
         self._keepalive = keepalive
         self._disconnect_reason = DisconnectReason.NORMAL
@@ -671,29 +699,69 @@ class SSHConnection:
         elif self._proxy_jump is not None:
             options["tunnel"] = self._proxy_jump
 
-        if self._known_hosts is None:
-            options["known_hosts"] = None
-        else:
-            options["known_hosts"] = self._known_hosts
+        # Set up host key verification
+        verifier: HostKeyVerifier | None = None
+        if self._host_key_policy is not None:
+            if self._host_key_policy == HostKeyPolicy.INSECURE:
+                # Skip verification entirely
+                options["known_hosts"] = None
+            else:
+                # Set up our custom verification
+                # Determine which known_hosts files to use
+                if self._known_hosts is not None:
+                    # User specified explicit paths
+                    if isinstance(self._known_hosts, list):
+                        read_paths = [Path(p) for p in self._known_hosts]
+                        # Use first path for writing (like OpenSSH)
+                        write_path = read_paths[0] if read_paths else get_known_hosts_write_path()
+                    else:
+                        read_paths = [Path(self._known_hosts)]
+                        write_path = read_paths[0]
+                else:
+                    # Use platform defaults
+                    read_paths = get_known_hosts_read_paths()
+                    write_path = get_known_hosts_write_path()
 
-        if auth_config.method == AuthMethod.PASSWORD:
+                verifier = HostKeyVerifier(
+                    known_hosts_paths=read_paths,
+                    write_path=write_path,
+                    policy=self._host_key_policy,
+                )
+                self._host_key_verifier = verifier
+
+                # Pass empty known_hosts to trigger our callback
+                # When known_hosts=() (empty), asyncssh won't find any entries
+                # and will call validate_host_public_key to let us decide
+                options["known_hosts"] = ()
+        else:
+            # No policy - use asyncssh's built-in verification
+            if self._known_hosts is None:
+                options["known_hosts"] = None
+            else:
+                options["known_hosts"] = self._known_hosts
+
+        # Determine if we need keyboard-interactive
+        kbdint_config: AuthConfig | None = None
+        if auth_config.method == AuthMethod.KEYBOARD_INTERACTIVE:
+            kbdint_config = auth_config
+            options["client_keys"] = []
+            options["password"] = None
+            options["preferred_auth"] = ["keyboard-interactive"]
+
+        elif auth_config.method == AuthMethod.PASSWORD:
             options["password"] = _reveal(auth_config.password)
-            options["client_keys"] = []  # Disable key auth
+            options["client_keys"] = []
 
         elif auth_config.method == AuthMethod.PRIVATE_KEY:
             assert auth_config.key_path is not None
-            # Load key with our error handling
             key = load_private_key(auth_config.key_path, _reveal(auth_config.passphrase))
             options["client_keys"] = [key]
-            options["password"] = None  # Disable password auth
-
-            # Load certificate if provided (CertificateFile support)
+            options["password"] = None
             if auth_config.certificate_path is not None:
                 cert = load_certificate(auth_config.certificate_path)
                 options["client_certs"] = [cert]
 
         elif auth_config.method == AuthMethod.SSH_AGENT:
-            # Get keys from agent
             agent_keys = await get_agent_keys()
             if not agent_keys:
                 raise AgentError("No keys available from SSH agent")
@@ -701,31 +769,13 @@ class SSHConnection:
             options["password"] = None
 
         elif auth_config.method == AuthMethod.GSSAPI:
-            # GSSAPI/Kerberos authentication
             options["gss_auth"] = True
             options["gss_kex"] = True
             options["gss_host"] = self._host
-            options["client_keys"] = []  # Disable key auth
-            options["password"] = None  # Disable password auth
-
-        elif auth_config.method == AuthMethod.KEYBOARD_INTERACTIVE:
-            # Keyboard-interactive authentication (2FA, challenge-response)
-            # Store the auth config for use by the client class
-            self._current_kbdint_config = auth_config
-            options["client_keys"] = []  # Disable key auth
-            options["password"] = None  # Disable password auth
-            # Use preferred_auth to request keyboard-interactive
-            options["preferred_auth"] = ["keyboard-interactive"]
-
-            # Create client factory for keyboard-interactive handling
-            def create_client() -> "_KbdintSSHClient":
-                return _KbdintSSHClient(auth_config)
-
-            self._conn = await asyncssh.connect(client_factory=create_client, **options)
-            return  # Exit early, connection already made
+            options["client_keys"] = []
+            options["password"] = None
 
         elif auth_config.method == AuthMethod.PKCS11:
-            # PKCS#11 smart card/hardware token authentication
             assert auth_config.pkcs11_provider is not None
             pkcs11_keys = load_pkcs11_keys(
                 provider=auth_config.pkcs11_provider,
@@ -742,9 +792,75 @@ class SSHConnection:
                     reason="no_keys_found",
                 )
             options["client_keys"] = list(pkcs11_keys)
-            options["password"] = None  # Disable password auth
+            options["password"] = None
 
-        self._conn = await asyncssh.connect(**options)
+        # Create connection using combined client for host key verification
+        if verifier is not None or kbdint_config is not None:
+            # Use combined client
+            client_instance: _CombinedSSHClient | None = None
+
+            def create_client() -> _CombinedSSHClient:
+                nonlocal client_instance
+                client_instance = _CombinedSSHClient(
+                    verifier=verifier,
+                    on_unknown=self._on_unknown_host_key,
+                    auth_config=kbdint_config,
+                )
+                client_instance.set_connection_info(self._host, self._port)
+                return client_instance
+
+            try:
+                self._conn = await asyncssh.connect(
+                    client_factory=create_client, **options
+                )
+            except asyncssh.HostKeyNotVerifiable as e:
+                # asyncssh may still raise this if our callback returned False
+                if client_instance is not None:
+                    result = client_instance.verification_result
+                    server_key = client_instance.server_key
+
+                    if result == HostKeyResult.CHANGED and server_key is not None:
+                        # Raise our detailed error
+                        stored_fps = verifier.get_stored_fingerprints(
+                            self._host, self._port
+                        ) if verifier else []
+                        raise HostKeyChangedError(
+                            host=self._host,
+                            port=self._port,
+                            server_fingerprint=get_key_fingerprint(server_key),
+                            stored_fingerprints=stored_fps,
+                        ) from e
+
+                    elif result == HostKeyResult.UNKNOWN and server_key is not None:
+                        raise HostKeyUnknownError(
+                            host=self._host,
+                            port=self._port,
+                            fingerprint=get_key_fingerprint(server_key),
+                        ) from e
+
+                raise
+
+            # Post-connection: save host key if needed
+            if (
+                client_instance is not None
+                and verifier is not None
+                and client_instance.server_key is not None
+            ):
+                result = client_instance.verification_result
+                if result == HostKeyResult.UNKNOWN:
+                    # Key was accepted - save it
+                    policy = self._host_key_policy
+                    if policy in (HostKeyPolicy.ACCEPT_NEW, HostKeyPolicy.ASK):
+                        verifier.save_host_key(
+                            self._host,
+                            self._port,
+                            client_instance.server_key,
+                        )
+
+            self._host_key_client = client_instance
+        else:
+            # No special handling needed
+            self._conn = await asyncssh.connect(**options)
 
     def _map_exception(
         self,
@@ -1218,4 +1334,138 @@ class _KbdintSSHClient(asyncssh.SSHClient):
 
         # No way to respond - cancel auth
         return None
+
+
+class _CombinedSSHClient(asyncssh.SSHClient):
+    """
+    SSH client that handles both host key verification and keyboard-interactive auth.
+
+    Combines HostKeyCapturingClient functionality with keyboard-interactive
+    authentication handling.
+    """
+
+    def __init__(
+        self,
+        verifier: HostKeyVerifier | None = None,
+        on_unknown: Callable[[str, int, asyncssh.SSHKey], bool] | None = None,
+        auth_config: AuthConfig | None = None,
+    ) -> None:
+        """
+        Initialise combined client.
+
+        Args:
+            verifier: HostKeyVerifier for checking keys (None to skip)
+            on_unknown: Callback for unknown host keys
+            auth_config: AuthConfig for keyboard-interactive (None to skip)
+        """
+        super().__init__()
+        self._verifier = verifier
+        self._on_unknown = on_unknown
+        self._auth_config = auth_config
+        self._host: str = ""
+        self._port: int = 22
+        self._result: HostKeyResult | None = None
+        self._server_key: asyncssh.SSHKey | None = None
+        self._challenge_count = 0
+
+    def set_connection_info(self, host: str, port: int) -> None:
+        """Set the host/port for this connection."""
+        self._host = host
+        self._port = port
+
+    @property
+    def verification_result(self) -> HostKeyResult | None:
+        """Get the result of host key verification."""
+        return self._result
+
+    @property
+    def server_key(self) -> asyncssh.SSHKey | None:
+        """Get the server's host key."""
+        return self._server_key
+
+    def validate_host_public_key(
+        self,
+        host: str,
+        addr: tuple[str, int],
+        port: int,
+        key: asyncssh.SSHKey,
+    ) -> bool:
+        """Validate the server's host public key."""
+        # Store the key for later use
+        self._server_key = key
+
+        # If no verifier, accept all (INSECURE mode or no policy set)
+        if self._verifier is None:
+            self._result = HostKeyResult.TRUSTED
+            return True
+
+        # Use stored host/port if provided, otherwise use callback args
+        check_host = self._host or host or addr[0]
+        check_port = self._port or port
+
+        result = self._verifier.check_host_key(check_host, check_port, key)
+        self._result = result
+
+        if result == HostKeyResult.TRUSTED:
+            return True
+
+        elif result == HostKeyResult.REVOKED:
+            # Always reject revoked keys
+            return False
+
+        elif result == HostKeyResult.CHANGED:
+            # Key mismatch - reject
+            return False
+
+        elif result == HostKeyResult.UNKNOWN:
+            # Handle based on policy
+            policy = self._verifier._policy
+
+            if policy == HostKeyPolicy.INSECURE:
+                return True
+            elif policy == HostKeyPolicy.ACCEPT_NEW:
+                return True
+            elif policy == HostKeyPolicy.STRICT:
+                return False
+            elif policy == HostKeyPolicy.ASK:
+                if self._on_unknown:
+                    return self._on_unknown(check_host, check_port, key)
+                return False
+
+        return False
+
+    # Keyboard-interactive methods
+    def kbdint_auth_requested(self) -> str | None:
+        """Called when server requests keyboard-interactive auth."""
+        if self._auth_config is None:
+            return None
+        return ""
+
+    def kbdint_challenge_received(
+        self,
+        name: str,
+        instructions: str,
+        lang: str,
+        prompts: list[tuple[str, bool]],
+    ) -> list[str] | None:
+        """Called when server sends a keyboard-interactive challenge."""
+        if self._auth_config is None:
+            return None
+
+        self._challenge_count += 1
+
+        # If callback is provided, use it
+        if self._auth_config.kbdint_response_callback is not None:
+            return self._auth_config.kbdint_response_callback(
+                name, instructions, prompts
+            )
+
+        # Otherwise, use password for all prompts
+        if self._auth_config.password is not None:
+            password_str = _reveal(self._auth_config.password)
+            return [password_str] * len(prompts)
+
+        # No way to respond - cancel auth
+        return None
+
 

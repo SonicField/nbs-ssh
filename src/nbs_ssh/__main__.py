@@ -24,6 +24,52 @@ from pathlib import Path
 from nbs_ssh.secure_string import SecureString
 
 
+def cli_unknown_host_callback(host: str, port: int, key) -> bool:
+    """
+    Prompt user to accept an unknown host key.
+
+    Called when ASK policy encounters an unknown host.
+
+    Args:
+        host: Server hostname
+        port: Server port
+        key: Server's public key (asyncssh.SSHKey)
+
+    Returns:
+        True if user accepts the key, False to reject.
+    """
+    from nbs_ssh import get_key_fingerprint
+
+    fingerprint = get_key_fingerprint(key)
+    key_type = key.get_algorithm()
+
+    print(
+        f"The authenticity of host '{host}' ({port}) can't be established.",
+        file=sys.stderr,
+    )
+    print(f"{key_type} key fingerprint is {fingerprint}.", file=sys.stderr)
+
+    while True:
+        try:
+            response = input("Are you sure you want to continue connecting (yes/no)? ")
+            response = response.strip().lower()
+            if response in ("yes", "y"):
+                print(
+                    f"Warning: Permanently added '{host}' ({key_type}) to the list of "
+                    "known hosts.",
+                    file=sys.stderr,
+                )
+                return True
+            elif response in ("no", "n"):
+                print("Host key verification failed.", file=sys.stderr)
+                return False
+            else:
+                print("Please type 'yes' or 'no': ", end="", file=sys.stderr)
+        except (EOFError, KeyboardInterrupt):
+            print("\nHost key verification failed.", file=sys.stderr)
+            return False
+
+
 def cli_kbdint_callback(
     name: str,
     instructions: str,
@@ -161,7 +207,20 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-host-check",
         action="store_true",
-        help="Disable host key verification (insecure)",
+        help="Disable host key verification (insecure). Equivalent to "
+             "--strict-host-key-checking=no",
+    )
+
+    parser.add_argument(
+        "--strict-host-key-checking",
+        metavar="MODE",
+        choices=["yes", "ask", "no", "accept-new"],
+        default="ask",
+        help="Host key verification mode (default: ask). "
+             "yes: reject unknown hosts (scripts). "
+             "ask: prompt for unknown hosts. "
+             "accept-new: accept and save unknown, reject changed. "
+             "no: accept all (INSECURE, testing only).",
     )
 
     parser.add_argument(
@@ -291,12 +350,24 @@ async def run_command(args: argparse.Namespace) -> int:
     # Set up event collection if --events
     event_collector = EventCollector() if args.events else None
 
-    # Host key verification: use ~/.ssh/known_hosts by default (like OpenSSH)
-    # --no-host-check explicitly disables verification by passing None
+    # Host key verification policy
+    # --no-host-check takes precedence and is equivalent to --strict-host-key-checking=no
+    from nbs_ssh import HostKeyPolicy
+
     if args.no_host_check:
-        known_hosts = None
+        host_key_policy = HostKeyPolicy.INSECURE
     else:
-        known_hosts = Path("~/.ssh/known_hosts").expanduser()
+        mode = getattr(args, 'strict_host_key_checking', 'ask')
+        policy_map = {
+            "yes": HostKeyPolicy.STRICT,
+            "ask": HostKeyPolicy.ASK,
+            "no": HostKeyPolicy.INSECURE,
+            "accept-new": HostKeyPolicy.ACCEPT_NEW,
+        }
+        host_key_policy = policy_map.get(mode, HostKeyPolicy.ASK)
+
+    # Set up callback for ASK policy
+    on_unknown_host_key = cli_unknown_host_callback if host_key_policy == HostKeyPolicy.ASK else None
 
     # Expand tokens in proxy_command if provided
     proxy_command = getattr(args, 'proxy_command', None)
@@ -312,7 +383,8 @@ async def run_command(args: argparse.Namespace) -> int:
             port=args.port,
             username=username,
             auth=auth_configs,
-            known_hosts=known_hosts,
+            host_key_policy=host_key_policy,
+            on_unknown_host_key=on_unknown_host_key,
             event_collector=event_collector,
             connect_timeout=args.timeout,
             proxy_jump=getattr(args, 'proxy_jump', None),
