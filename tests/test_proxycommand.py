@@ -290,17 +290,19 @@ class TestCLIProxyCommand:
         assert args.proxy_command == "nc proxy %h %p"
 
     def test_proxy_command_short_flag(self) -> None:
-        """Test -o flag is parsed correctly."""
+        """Test -o ProxyCommand= option is parsed correctly (OpenSSH format)."""
         from nbs_ssh.__main__ import create_parser
 
         parser = create_parser()
         args = parser.parse_args([
-            "-o", "nc proxy %h %p",
+            "-o", "ProxyCommand=nc proxy %h %p",
             "target",
             "echo hello",
         ])
 
-        assert args.proxy_command == "nc proxy %h %p"
+        # -o ProxyCommand= is stored in ssh_options, not proxy_command
+        # The proxy_command is resolved later in run_command()
+        assert args.ssh_options == ["ProxyCommand=nc proxy %h %p"]
 
     def test_proxy_command_default_none(self) -> None:
         """Test proxy_command defaults to None."""

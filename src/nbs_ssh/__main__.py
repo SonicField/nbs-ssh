@@ -777,9 +777,17 @@ async def run_command(args: argparse.Namespace) -> int:
     if timeout == 30.0 and host_config.connect_timeout is not None:
         timeout = float(host_config.connect_timeout)
 
-    # Resolve proxy settings: CLI > config
-    proxy_jump = getattr(args, 'proxy_jump', None) or host_config.proxy_jump
-    proxy_command = getattr(args, 'proxy_command', None) or host_config.proxy_command
+    # Resolve proxy settings: CLI > -o options > config
+    proxy_jump = getattr(args, 'proxy_jump', None)
+    proxy_command = getattr(args, 'proxy_command', None)
+
+    # Check for ProxyCommand/ProxyJump in -o options (parsed after extracting them)
+    # This is done after ssh_options parsing below, so we need to re-order
+    # For now, fall back to config if not set
+    if not proxy_jump:
+        proxy_jump = host_config.proxy_jump
+    if not proxy_command:
+        proxy_command = host_config.proxy_command
 
     # Resolve ForwardAgent: CLI > config
     forward_agent = getattr(args, 'forward_agent', False) or host_config.forward_agent
@@ -800,6 +808,12 @@ async def run_command(args: argparse.Namespace) -> int:
     batch_mode = ssh_options.get('batchmode', '').lower() == 'yes'
     visual_host_key = ssh_options.get('visualhostkey', '').lower() == 'yes'
     hash_known_hosts = ssh_options.get('hashknownhosts', '').lower() == 'yes'
+
+    # Handle -o ProxyCommand= and -o ProxyJump= (takes precedence over config, not CLI flags)
+    if not proxy_command and 'proxycommand' in ssh_options:
+        proxy_command = ssh_options['proxycommand']
+    if not proxy_jump and 'proxyjump' in ssh_options:
+        proxy_jump = ssh_options['proxyjump']
 
     # Merge ControlMaster settings: CLI > -o options > config
     control_master_opt = ssh_options.get('controlmaster', '')
