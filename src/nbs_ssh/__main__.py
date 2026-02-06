@@ -14,12 +14,16 @@ Usage:
     python -m nbs_ssh -R 9090:localhost:3000 user@host  # Remote forward
     python -m nbs_ssh -D 1080 user@host  # Dynamic SOCKS
     python -m nbs_ssh -N -L 8080:localhost:80 user@host  # Forwarding only
+    python -m nbs_ssh -o BatchMode=yes user@host  # Batch mode (no prompting)
+    python -m nbs_ssh -o SendEnv=LANG user@host  # Forward env vars
+    python -m nbs_ssh -o VisualHostKey=yes user@host  # Show host key art
     python -m nbs_ssh --help
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import fnmatch
 import getpass
 import logging
 import os
@@ -29,6 +33,165 @@ import sys
 from pathlib import Path
 
 from nbs_ssh.secure_string import SecureString
+
+
+def parse_ssh_options(options: list[str] | None) -> dict[str, str]:
+    """
+    Parse OpenSSH-style -o options into a dictionary.
+
+    Supports option=value format. Case-insensitive option names.
+
+    Args:
+        options: List of "option=value" strings from -o arguments
+
+    Returns:
+        Dictionary of option names (lowercase) to values
+
+    Raises:
+        ValueError: If option format is invalid
+    """
+    result: dict[str, str] = {}
+    if not options:
+        return result
+
+    for opt in options:
+        if "=" not in opt:
+            raise ValueError(
+                f"Invalid SSH option format: {opt!r}. Expected option=value"
+            )
+        name, value = opt.split("=", 1)
+        result[name.strip().lower()] = value.strip()
+
+    return result
+
+
+def get_send_env_vars(patterns: list[str]) -> dict[str, str]:
+    """
+    Get environment variables matching SendEnv patterns.
+
+    Supports glob patterns like LANG, LC_*, MY_VAR.
+
+    Args:
+        patterns: List of environment variable name patterns
+
+    Returns:
+        Dictionary of matching env var names to values
+    """
+    result: dict[str, str] = {}
+    for pattern in patterns:
+        for var_name, var_value in os.environ.items():
+            if fnmatch.fnmatch(var_name, pattern):
+                result[var_name] = var_value
+    return result
+
+
+def parse_set_env(specs: list[str]) -> dict[str, str]:
+    """
+    Parse SetEnv specifications into environment variable dict.
+
+    Args:
+        specs: List of "VAR=value" specifications
+
+    Returns:
+        Dictionary of variable names to values
+    """
+    result: dict[str, str] = {}
+    for spec in specs:
+        if "=" in spec:
+            name, value = spec.split("=", 1)
+            result[name.strip()] = value
+        else:
+            # Variable name without value - set empty
+            result[spec.strip()] = ""
+    return result
+
+
+def generate_visual_host_key(key, size: int = 17) -> str:
+    """
+    Generate ASCII art visualisation of SSH host key (randomart).
+
+    Uses the same algorithm as OpenSSH's VisualHostKey feature,
+    based on the "drunken bishop" algorithm.
+
+    Args:
+        key: AsyncSSH key object
+        size: Size of the field (default 17x9 like OpenSSH)
+
+    Returns:
+        ASCII art string with border
+    """
+    import hashlib
+
+    # Get key fingerprint bytes
+    public_data = key.public_data
+    digest = hashlib.md5(public_data).digest()
+
+    # Field dimensions (OpenSSH uses 17x9)
+    width = size
+    height = (size + 1) // 2
+
+    # Create field
+    field = [[0] * width for _ in range(height)]
+
+    # Starting position (center)
+    x = width // 2
+    y = height // 2
+
+    # Mark start position
+    start_x, start_y = x, y
+
+    # Walk the bishop
+    for byte in digest:
+        for i in range(4):
+            # Extract 2 bits
+            direction = (byte >> (2 * i)) & 0x03
+
+            # Move based on direction
+            # 0 = up-left, 1 = up-right, 2 = down-left, 3 = down-right
+            if direction in (0, 1):
+                y = max(0, y - 1)  # up
+            else:
+                y = min(height - 1, y + 1)  # down
+
+            if direction in (0, 2):
+                x = max(0, x - 1)  # left
+            else:
+                x = min(width - 1, x + 1)  # right
+
+            # Increment visit count (capped at 14)
+            field[y][x] = min(14, field[y][x] + 1)
+
+    # End position
+    end_x, end_y = x, y
+
+    # Character map for visit counts
+    # OpenSSH uses: . o + = * B O X @ % & # / ^
+    chars = " .o+=*BOX@%&#/^"
+
+    # Get key type for header
+    key_type_raw = key.algorithm
+    key_type = key_type_raw.decode('ascii') if isinstance(key_type_raw, bytes) else key_type_raw
+
+    # Build the art
+    lines = []
+    header = f"[{key_type}]"
+    lines.append("+" + "-" * (width - len(header)) + header + "+")
+
+    for row_idx, row in enumerate(field):
+        line = "|"
+        for col_idx, val in enumerate(row):
+            if col_idx == start_x and row_idx == start_y:
+                line += "S"  # Start
+            elif col_idx == end_x and row_idx == end_y:
+                line += "E"  # End
+            else:
+                line += chars[val]
+        line += "|"
+        lines.append(line)
+
+    lines.append("+" + "-" * width + "+")
+
+    return "\n".join(lines)
 
 
 def cli_unknown_host_callback(host: str, port: int, key) -> bool:
@@ -301,11 +464,23 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "-o", "--proxy-command",
+        "--proxy-command",
         metavar="COMMAND",
+        dest="proxy_command",
         help="Command whose stdin/stdout becomes the SSH transport "
              "(like ssh -o ProxyCommand=...). Tokens %%h, %%p are expanded. "
              "Takes precedence over --proxy-jump.",
+    )
+
+    # OpenSSH-style -o options (BatchMode, SendEnv, SetEnv, etc.)
+    parser.add_argument(
+        "-o", "--option",
+        metavar="OPTION",
+        action="append",
+        dest="ssh_options",
+        help="Set SSH option (OpenSSH compatible). Examples: "
+             "BatchMode=yes, SendEnv=LANG, SetEnv=FOO=bar, "
+             "VisualHostKey=yes, HashKnownHosts=yes",
     )
 
     parser.add_argument(
@@ -584,6 +759,43 @@ async def run_command(args: argparse.Namespace) -> int:
     # Resolve ForwardAgent: CLI > config
     forward_agent = getattr(args, 'forward_agent', False) or host_config.forward_agent
 
+    # Parse -o SSH options
+    try:
+        ssh_options = parse_ssh_options(getattr(args, 'ssh_options', None))
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    # Extract specific options
+    batch_mode = ssh_options.get('batchmode', '').lower() == 'yes'
+    visual_host_key = ssh_options.get('visualhostkey', '').lower() == 'yes'
+    hash_known_hosts = ssh_options.get('hashknownhosts', '').lower() == 'yes'
+
+    # Parse SendEnv patterns (can be comma-separated or multiple -o SendEnv=)
+    send_env_patterns: list[str] = []
+    for key, value in ssh_options.items():
+        if key == 'sendenv':
+            # Split by comma to support "SendEnv=LANG,LC_*"
+            send_env_patterns.extend(v.strip() for v in value.split(',') if v.strip())
+
+    # Parse SetEnv specifications
+    set_env_vars: dict[str, str] = {}
+    for key, value in ssh_options.items():
+        if key == 'setenv':
+            set_env_vars.update(parse_set_env([value]))
+
+    # Get environment variables to forward
+    env_to_send = get_send_env_vars(send_env_patterns)
+    # SetEnv takes precedence over SendEnv
+    env_to_send.update(set_env_vars)
+
+    # In BatchMode, we fail instead of prompting
+    if batch_mode:
+        # Use STRICT host key policy (no prompting)
+        if getattr(args, 'strict_host_key_checking', 'ask') == 'ask':
+            # Override to strict in batch mode
+            args.strict_host_key_checking = 'yes'
+
     # Track secrets for eradication after use
     secrets_to_eradicate: list[SecureString] = []
 
@@ -604,11 +816,24 @@ async def run_command(args: argparse.Namespace) -> int:
                 auth_configs.append(create_key_auth(key_path))
 
     if args.password:
+        if batch_mode:
+            print(
+                "Error: Password prompt required but BatchMode=yes. "
+                "Cannot prompt for password in batch mode.",
+                file=sys.stderr,
+            )
+            return 1
         password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
         secrets_to_eradicate.append(password)
         auth_configs.append(create_password_auth(password))
 
     if getattr(args, 'keyboard_interactive', False):
+        if batch_mode:
+            print(
+                "Error: Keyboard-interactive auth requires prompting but BatchMode=yes.",
+                file=sys.stderr,
+            )
+            return 1
         # Use keyboard-interactive with CLI callback for prompts
         auth_configs.append(
             create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
@@ -627,12 +852,16 @@ async def run_command(args: argparse.Namespace) -> int:
                 secret.eradicate()
             return 1
         # Prompt for PIN if not provided
-        pin_str = getpass.getpass("PKCS#11 PIN (or press Enter for no PIN): ")
-        if pin_str:
-            pin = SecureString(pin_str)
-            secrets_to_eradicate.append(pin)
-        else:
+        if batch_mode:
+            # In batch mode, don't prompt - use None (no PIN)
             pin = None
+        else:
+            pin_str = getpass.getpass("PKCS#11 PIN (or press Enter for no PIN): ")
+            if pin_str:
+                pin = SecureString(pin_str)
+                secrets_to_eradicate.append(pin)
+            else:
+                pin = None
         auth_configs.append(
             create_pkcs11_auth(
                 provider=args.pkcs11_provider,
@@ -658,6 +887,13 @@ async def run_command(args: argparse.Namespace) -> int:
 
         # If still nothing, fall back to password (with keyboard-interactive as backup)
         if not auth_configs:
+            if batch_mode:
+                print(
+                    "Error: No authentication methods available and BatchMode=yes. "
+                    "Cannot prompt for password in batch mode.",
+                    file=sys.stderr,
+                )
+                return 1
             password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
             secrets_to_eradicate.append(password)
             auth_configs.append(create_password_auth(password))
@@ -686,7 +922,16 @@ async def run_command(args: argparse.Namespace) -> int:
         host_key_policy = policy_map.get(mode, HostKeyPolicy.ASK)
 
     # Set up callback for ASK policy
-    on_unknown_host_key = cli_unknown_host_callback if host_key_policy == HostKeyPolicy.ASK else None
+    # In batch mode, we use STRICT policy so no callback needed
+    if host_key_policy == HostKeyPolicy.ASK and not batch_mode:
+        # Create a wrapper callback that shows visual host key if enabled
+        def host_key_callback_wrapper(h: str, p: int, key) -> bool:
+            if visual_host_key:
+                print(generate_visual_host_key(key), file=sys.stderr)
+            return cli_unknown_host_callback(h, p, key)
+        on_unknown_host_key = host_key_callback_wrapper
+    else:
+        on_unknown_host_key = None
 
     # Expand tokens in proxy_command if provided (already resolved from CLI or config)
     if proxy_command:
@@ -710,6 +955,7 @@ async def run_command(args: argparse.Namespace) -> int:
             agent_forwarding=forward_agent,
             x11_forwarding=getattr(args, 'forward_x11', False) or getattr(args, 'forward_x11_trusted', False),
             compression=getattr(args, 'compress', False),
+            hash_known_hosts=hash_known_hosts,
         ) as conn:
             # Set up port forwarding if requested
             forward_manager = ForwardManager(emitter=event_collector)
@@ -824,7 +1070,9 @@ async def run_command(args: argparse.Namespace) -> int:
                     # Default: no PTY for command execution
                     term_type = None
 
-                result = await conn.exec(args.command, term_type=term_type)
+                # Pass environment variables if SendEnv/SetEnv configured
+                exec_env = env_to_send if env_to_send else None
+                result = await conn.exec(args.command, term_type=term_type, env=exec_env)
 
                 # Output stdout to stdout, stderr to stderr
                 if result.stdout:

@@ -956,7 +956,7 @@ async def test_extended_options_passed_to_connection() -> None:
         async def __aexit__(self, *args):
             pass
 
-        async def exec(self, command, term_type=None):
+        async def exec(self, command, term_type=None, env=None):
             from nbs_ssh.connection import ExecResult
             captured_options["exec_term_type"] = term_type
             return ExecResult(stdout="hello\n", stderr="", exit_code=0)
@@ -1064,7 +1064,7 @@ class TestSSHConfigIntegration:
             async def __aexit__(self, *args):
                 pass
 
-            async def exec(self, command, term_type=None):
+            async def exec(self, command, term_type=None, env=None):
                 from nbs_ssh.connection import ExecResult
                 return ExecResult(stdout="hello\n", stderr="", exit_code=0)
 
@@ -1154,7 +1154,7 @@ class TestSSHConfigIntegration:
             async def __aexit__(self, *args):
                 pass
 
-            async def exec(self, command, term_type=None):
+            async def exec(self, command, term_type=None, env=None):
                 from nbs_ssh.connection import ExecResult
                 return ExecResult(stdout="hello\n", stderr="", exit_code=0)
 
@@ -1245,7 +1245,7 @@ class TestSSHConfigIntegration:
             async def __aexit__(self, *args):
                 pass
 
-            async def exec(self, command, term_type=None):
+            async def exec(self, command, term_type=None, env=None):
                 from nbs_ssh.connection import ExecResult
                 return ExecResult(stdout="hello\n", stderr="", exit_code=0)
 
@@ -1329,7 +1329,7 @@ class TestSSHConfigIntegration:
             async def __aexit__(self, *args):
                 pass
 
-            async def exec(self, command, term_type=None):
+            async def exec(self, command, term_type=None, env=None):
                 from nbs_ssh.connection import ExecResult
                 return ExecResult(stdout="hello\n", stderr="", exit_code=0)
 
@@ -1413,7 +1413,7 @@ class TestSSHConfigIntegration:
             async def __aexit__(self, *args):
                 pass
 
-            async def exec(self, command, term_type=None):
+            async def exec(self, command, term_type=None, env=None):
                 from nbs_ssh.connection import ExecResult
                 return ExecResult(stdout="hello\n", stderr="", exit_code=0)
 
@@ -1557,4 +1557,328 @@ class TestSSHConfigHelpOutput:
         assert "-F" in result.stdout
         assert "-G" in result.stdout
         assert "config file" in result.stdout.lower()
+
+
+class TestSSHOptionsParsing:
+    """Tests for -o option parsing."""
+
+    def test_parse_ssh_options_simple(self) -> None:
+        """Test parsing simple SSH options."""
+        from nbs_ssh.__main__ import parse_ssh_options
+
+        result = parse_ssh_options(["BatchMode=yes", "SendEnv=LANG"])
+        assert result == {"batchmode": "yes", "sendenv": "LANG"}
+
+    def test_parse_ssh_options_case_insensitive(self) -> None:
+        """Test option names are case-insensitive."""
+        from nbs_ssh.__main__ import parse_ssh_options
+
+        result = parse_ssh_options(["BATCHMODE=yes", "batchmode=no"])
+        # Last value wins
+        assert result["batchmode"] == "no"
+
+    def test_parse_ssh_options_empty(self) -> None:
+        """Test parsing empty options."""
+        from nbs_ssh.__main__ import parse_ssh_options
+
+        result = parse_ssh_options(None)
+        assert result == {}
+
+        result = parse_ssh_options([])
+        assert result == {}
+
+    def test_parse_ssh_options_invalid_format(self) -> None:
+        """Test invalid option format raises ValueError."""
+        from nbs_ssh.__main__ import parse_ssh_options
+
+        with pytest.raises(ValueError, match="Invalid SSH option format"):
+            parse_ssh_options(["BatchMode"])  # Missing =
+
+    def test_cli_option_parsing(self) -> None:
+        """Test -o argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-o", "BatchMode=yes", "host.example.com"])
+
+        assert args.ssh_options == ["BatchMode=yes"]
+
+    def test_cli_multiple_options(self) -> None:
+        """Test multiple -o arguments are collected."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args([
+            "-o", "BatchMode=yes",
+            "-o", "SendEnv=LANG",
+            "-o", "VisualHostKey=yes",
+            "host.example.com",
+        ])
+
+        assert args.ssh_options == ["BatchMode=yes", "SendEnv=LANG", "VisualHostKey=yes"]
+
+
+class TestSendEnvSetEnv:
+    """Tests for SendEnv and SetEnv options."""
+
+    def test_get_send_env_vars_exact_match(self) -> None:
+        """Test SendEnv with exact variable name."""
+        import os
+        from nbs_ssh.__main__ import get_send_env_vars
+
+        # Set a test env var
+        original = os.environ.get("TEST_SENDENV_VAR")
+        os.environ["TEST_SENDENV_VAR"] = "test_value"
+
+        try:
+            result = get_send_env_vars(["TEST_SENDENV_VAR"])
+            assert result.get("TEST_SENDENV_VAR") == "test_value"
+        finally:
+            if original is None:
+                os.environ.pop("TEST_SENDENV_VAR", None)
+            else:
+                os.environ["TEST_SENDENV_VAR"] = original
+
+    def test_get_send_env_vars_pattern(self) -> None:
+        """Test SendEnv with glob pattern."""
+        import os
+        from nbs_ssh.__main__ import get_send_env_vars
+
+        # Set test env vars
+        os.environ["TEST_PATTERN_A"] = "value_a"
+        os.environ["TEST_PATTERN_B"] = "value_b"
+
+        try:
+            result = get_send_env_vars(["TEST_PATTERN_*"])
+            assert "TEST_PATTERN_A" in result
+            assert "TEST_PATTERN_B" in result
+        finally:
+            os.environ.pop("TEST_PATTERN_A", None)
+            os.environ.pop("TEST_PATTERN_B", None)
+
+    def test_parse_set_env(self) -> None:
+        """Test SetEnv parsing."""
+        from nbs_ssh.__main__ import parse_set_env
+
+        result = parse_set_env(["FOO=bar", "BAZ=qux"])
+        assert result == {"FOO": "bar", "BAZ": "qux"}
+
+    def test_parse_set_env_empty_value(self) -> None:
+        """Test SetEnv with empty value."""
+        from nbs_ssh.__main__ import parse_set_env
+
+        result = parse_set_env(["EMPTY=", "NO_EQUALS"])
+        assert result["EMPTY"] == ""
+        assert result["NO_EQUALS"] == ""
+
+
+class TestBatchMode:
+    """Tests for BatchMode option."""
+
+    @pytest.mark.asyncio
+    async def test_batch_mode_fails_on_password_prompt(self) -> None:
+        """Test BatchMode=yes fails when password would be needed."""
+        import argparse
+        from unittest.mock import patch
+
+        from nbs_ssh.__main__ import run_command
+
+        args = argparse.Namespace(
+            target="test@localhost",
+            command="echo hello",
+            port=29999,  # Won't connect anyway
+            login=None,
+            identity=None,
+            password=True,  # Explicitly request password (would prompt)
+            keyboard_interactive=False,
+            pkcs11_provider=None,
+            events=False,
+            no_host_check=True,
+            strict_host_key_checking="ask",
+            timeout=2.0,
+            proxy_jump=None,
+            proxy_command=None,
+            local_forward=None,
+            remote_forward=None,
+            dynamic_forward=None,
+            no_command=False,
+            verbose=0,
+            forward_agent=False,
+            compress=False,
+            forward_x11=False,
+            forward_x11_trusted=False,
+            force_tty=False,
+            disable_tty=False,
+            quiet=False,
+            config_file=None,
+            print_config=False,
+            ssh_options=["BatchMode=yes"],
+        )
+
+        exit_code = await run_command(args)
+        assert exit_code == 1  # Should fail due to batch mode
+
+    @pytest.mark.asyncio
+    async def test_batch_mode_uses_strict_host_key(self) -> None:
+        """Test BatchMode=yes uses STRICT host key policy."""
+        import argparse
+        from unittest.mock import patch
+
+        from nbs_ssh.__main__ import run_command
+        from nbs_ssh import HostKeyPolicy
+
+        captured_policy = None
+
+        class MockConnection:
+            def __init__(self, **kwargs):
+                nonlocal captured_policy
+                captured_policy = kwargs.get("host_key_policy")
+                from unittest.mock import MagicMock
+                self._conn = MagicMock()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def exec(self, command, term_type=None, env=None):
+                from nbs_ssh.connection import ExecResult
+                return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+        args = argparse.Namespace(
+            target="test@localhost",
+            command="echo hello",
+            port=22,
+            login=None,
+            identity="/path/to/fake/key",  # Provide key to avoid password prompt
+            password=False,
+            keyboard_interactive=False,
+            pkcs11_provider=None,
+            events=False,
+            no_host_check=False,
+            strict_host_key_checking="ask",  # Default, but batch mode should override
+            timeout=10.0,
+            proxy_jump=None,
+            proxy_command=None,
+            local_forward=None,
+            remote_forward=None,
+            dynamic_forward=None,
+            no_command=False,
+            verbose=0,
+            forward_agent=False,
+            compress=False,
+            forward_x11=False,
+            forward_x11_trusted=False,
+            force_tty=False,
+            disable_tty=False,
+            quiet=False,
+            config_file=None,
+            print_config=False,
+            ssh_options=["BatchMode=yes"],
+        )
+
+        # Need to patch Path.exists for the identity file
+        with patch("nbs_ssh.SSHConnection", MockConnection):
+            with patch("pathlib.Path.exists", return_value=True):
+                await run_command(args)
+
+        # In batch mode with ask policy, should switch to STRICT
+        assert captured_policy == HostKeyPolicy.STRICT
+
+
+class TestVisualHostKey:
+    """Tests for VisualHostKey option."""
+
+    def test_generate_visual_host_key(self) -> None:
+        """Test visual host key generation produces valid ASCII art."""
+        from nbs_ssh.__main__ import generate_visual_host_key
+        import asyncssh
+
+        # Generate a test key
+        key = asyncssh.generate_private_key("ssh-ed25519")
+        public_key = key.convert_to_public()
+
+        art = generate_visual_host_key(public_key)
+
+        # Should have borders
+        assert art.startswith("+")
+        assert art.endswith("+")
+        assert "|" in art
+
+        # Should have start and end markers
+        assert "S" in art
+        assert "E" in art
+
+        # Should have key type in header
+        assert "ssh-ed25519" in art or "ed25519" in art.lower()
+
+    def test_visual_host_key_dimensions(self) -> None:
+        """Test visual host key has correct dimensions."""
+        from nbs_ssh.__main__ import generate_visual_host_key
+        import asyncssh
+
+        key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
+        public_key = key.convert_to_public()
+
+        art = generate_visual_host_key(public_key, size=17)
+        lines = art.split("\n")
+
+        # Default size is 17 wide, 9 tall (plus 2 border lines = 11 total)
+        assert len(lines) == 11  # 9 + 2 borders
+
+        # Each line should be width + 2 (for | borders)
+        for line in lines[1:-1]:  # Exclude top/bottom borders
+            assert len(line) == 19  # 17 + 2 for |
+
+
+class TestHashKnownHosts:
+    """Tests for HashKnownHosts option."""
+
+    def test_hash_hostname_format(self) -> None:
+        """Test that hashed hostnames follow OpenSSH format."""
+        from nbs_ssh.host_key import _hash_hostname
+
+        salt = b"12345678901234567890"  # 20 bytes
+        result = _hash_hostname("example.com", salt)
+
+        assert result.startswith("|1|")
+        parts = result.split("|")
+        assert len(parts) == 4
+        # Salt and hash should be base64-encoded
+        import base64
+        base64.b64decode(parts[2])  # Should not raise
+        base64.b64decode(parts[3])  # Should not raise
+
+    def test_check_hashed_hostname(self) -> None:
+        """Test that hashed hostname verification works."""
+        from nbs_ssh.host_key import _hash_hostname, _check_hashed_hostname
+
+        salt = b"abcdefghijklmnopqrst"  # 20 bytes
+        hashed = _hash_hostname("myhost.example.com", salt)
+
+        assert _check_hashed_hostname(hashed, "myhost.example.com")
+        assert not _check_hashed_hostname(hashed, "other.example.com")
+
+
+class TestSSHOptionsHelpOutput:
+    """Tests for SSH options in help output."""
+
+    def test_help_shows_o_option(self) -> None:
+        """Test --help shows -o option."""
+        result = subprocess.run(
+            [sys.executable, "-m", "nbs_ssh", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+            env={
+                **subprocess.os.environ,
+                "PYTHONPATH": str(Path(__file__).parent.parent / "src"),
+            },
+        )
+
+        assert result.returncode == 0
+        assert "-o" in result.stdout
+        assert "BatchMode" in result.stdout
+        assert "SendEnv" in result.stdout
 

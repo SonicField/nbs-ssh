@@ -228,6 +228,7 @@ class HostKeyVerifier:
         known_hosts_paths: list[Path],
         write_path: Path | None,
         policy: HostKeyPolicy,
+        hash_known_hosts: bool = False,
     ) -> None:
         """
         Initialise the host key verifier.
@@ -236,10 +237,12 @@ class HostKeyVerifier:
             known_hosts_paths: List of known_hosts files to read (existing files)
             write_path: Path to write new entries (usually user's known_hosts)
             policy: Verification policy (STRICT, ASK, ACCEPT_NEW, INSECURE)
+            hash_known_hosts: If True, hash hostnames when saving to known_hosts
         """
         self._known_hosts_paths = known_hosts_paths
         self._write_path = write_path
         self._policy = policy
+        self._hash_known_hosts = hash_known_hosts
 
         # Parsed entries indexed by key type + key data for fast lookup
         self._entries: list[HostKeyEntry] = []
@@ -394,8 +397,17 @@ class HostKeyVerifier:
         # Export key in OpenSSH format
         key_line = key.export_public_key('openssh').decode('utf-8').strip()
 
-        # Format hostname
+        # Format hostname (with optional hashing)
         host_entry = _format_host_for_known_hosts(host, port)
+
+        if self._hash_known_hosts:
+            # Hash the hostname using OpenSSH's scheme
+            import secrets
+            salt = secrets.token_bytes(20)  # 20-byte random salt
+            host_entry = _hash_hostname(host_entry, salt)
+            is_hashed = True
+        else:
+            is_hashed = False
 
         # Build the full line
         # key_line is "key_type key_data", so we just prepend the host
@@ -416,7 +428,7 @@ class HostKeyVerifier:
                 key_type=parts[0],
                 key_data=parts[1],
                 is_revoked=False,
-                is_hashed=False,
+                is_hashed=is_hashed,
                 raw_line=full_line.strip(),
             ))
 

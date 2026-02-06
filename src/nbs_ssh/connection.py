@@ -328,6 +328,7 @@ class SSHConnection:
         agent_forwarding: bool = False,
         x11_forwarding: bool = False,
         compression: bool = False,
+        hash_known_hosts: bool = False,
     ) -> None:
         """
         Initialise SSH connection parameters.
@@ -368,6 +369,7 @@ class SSHConnection:
             agent_forwarding: Enable SSH agent forwarding (like ssh -A)
             x11_forwarding: Enable X11 forwarding (like ssh -X/-Y)
             compression: Enable compression (like ssh -C)
+            hash_known_hosts: Hash hostnames when saving to known_hosts
         """
         # Preconditions
         assert host, "Host must be specified"
@@ -478,6 +480,7 @@ class SSHConnection:
         self._agent_forwarding = agent_forwarding
         self._x11_forwarding = x11_forwarding
         self._compression = compression
+        self._hash_known_hosts = hash_known_hosts
 
     def _build_auth_configs(
         self,
@@ -746,6 +749,7 @@ class SSHConnection:
                     known_hosts_paths=read_paths,
                     write_path=write_path,
                     policy=self._host_key_policy,
+                    hash_known_hosts=self._hash_known_hosts,
                 )
                 self._host_key_verifier = verifier
 
@@ -947,7 +951,12 @@ class SSHConnection:
 
         self._emitter.close()
 
-    async def exec(self, command: str, term_type: str | None = None) -> ExecResult:
+    async def exec(
+        self,
+        command: str,
+        term_type: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ExecResult:
         """
         Execute a command on the remote host.
 
@@ -956,6 +965,8 @@ class SSHConnection:
             term_type: Terminal type for pseudo-tty allocation (e.g., 'xterm-256color').
                        If None, no PTY is allocated. Use this for commands that
                        require a TTY (like ssh -t).
+            env: Optional environment variables to set for the remote command.
+                 Note: Server must be configured with AcceptEnv to accept these.
 
         Returns:
             ExecResult with stdout, stderr, and exit_code
@@ -965,7 +976,12 @@ class SSHConnection:
 
         with self._emitter.timed_event(EventType.EXEC, command=command) as event_data:
             try:
-                result = await self._conn.run(command, check=False, term_type=term_type)
+                result = await self._conn.run(
+                    command,
+                    check=False,
+                    term_type=term_type,
+                    env=env,
+                )
 
                 exit_code = result.exit_status if result.exit_status is not None else -1
                 stdout = result.stdout or ""
@@ -976,6 +992,8 @@ class SSHConnection:
                 event_data["stderr_len"] = len(stderr)
                 if term_type is not None:
                     event_data["term_type"] = term_type
+                if env:
+                    event_data["env_count"] = len(env)
 
                 return ExecResult(
                     stdout=stdout,
