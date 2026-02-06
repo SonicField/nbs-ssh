@@ -76,6 +76,14 @@ from nbs_ssh.evidence import (
 )
 from nbs_ssh.forwarding import ForwardHandle, ForwardIntent, ForwardManager, ForwardType
 from nbs_ssh.keepalive import KeepaliveConfig, ProgressWatchdog
+from nbs_ssh.multiplex import (
+    ControlMaster,
+    ControlMasterMode,
+    ControlCommand,
+    MultiplexClient,
+    expand_control_path,
+    parse_control_persist,
+)
 from nbs_ssh.platform import (
     discover_keys,
     expand_path,
@@ -174,6 +182,13 @@ __all__ = [
     # Keepalive
     "KeepaliveConfig",
     "ProgressWatchdog",
+    # Multiplexing
+    "ControlMaster",
+    "ControlMasterMode",
+    "ControlCommand",
+    "MultiplexClient",
+    "expand_control_path",
+    "parse_control_persist",
     # Proxy
     "ProxyCommandError",
     "ProxyCommandProcess",

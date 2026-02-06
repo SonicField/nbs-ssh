@@ -45,6 +45,11 @@ class SSHHostConfig:
     pubkey_accepted_algorithms: list[str] | None = None
     pkcs11_provider: str | None = None  # PKCS#11 shared library path
 
+    # Connection multiplexing (ControlMaster)
+    control_master: str | None = None    # yes/no/auto/autoask
+    control_path: str | None = None      # Socket path template
+    control_persist: str | None = None   # yes/no/time
+
     # Other useful options
     forward_agent: bool = False
     proxy_command: str | None = None
@@ -116,6 +121,10 @@ class SSHConfig:
         "proxycommand": "proxycommand",
         "proxyjump": "proxyjump",
         "pkcs11provider": "pkcs11provider",
+        # Connection multiplexing
+        "controlmaster": "controlmaster",
+        "controlpath": "controlpath",
+        "controlpersist": "controlpersist",
     }
 
     def __init__(
@@ -474,6 +483,22 @@ class SSHConfig:
             provider = str(options["pkcs11provider"])
             if provider.lower() != "none":
                 config.pkcs11_provider = provider
+
+        # ControlMaster
+        if "controlmaster" in options:
+            config.control_master = str(options["controlmaster"]).lower()
+
+        # ControlPath (with token expansion)
+        if "controlpath" in options:
+            path = str(options["controlpath"])
+            if path.lower() != "none":
+                # Don't expand tokens here - will be done at connection time
+                # when we know the full connection details
+                config.control_path = path
+
+        # ControlPersist
+        if "controlpersist" in options:
+            config.control_persist = str(options["controlpersist"])
 
         return config
 

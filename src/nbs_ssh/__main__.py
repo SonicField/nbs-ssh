@@ -637,6 +637,31 @@ def create_parser() -> argparse.ArgumentParser:
         help="Print resolved configuration and exit (like ssh -G)",
     )
 
+    # Connection multiplexing (ControlMaster)
+    parser.add_argument(
+        "-M", "--control-master",
+        action="store_true",
+        dest="control_master",
+        help="Place SSH in master mode for connection sharing",
+    )
+
+    parser.add_argument(
+        "-S", "--control-path",
+        metavar="PATH",
+        dest="control_path",
+        help="Control socket path for connection sharing. "
+             "Tokens: %%h=host, %%p=port, %%r=remote_user, %%u=local_user, "
+             "%%L=local_host, %%C=connection_hash",
+    )
+
+    parser.add_argument(
+        "-O", "--control-command",
+        metavar="CMD",
+        dest="control_command",
+        choices=["check", "forward", "cancel", "exit", "stop"],
+        help="Control an active master connection",
+    )
+
     return parser
 
 
@@ -759,6 +784,11 @@ async def run_command(args: argparse.Namespace) -> int:
     # Resolve ForwardAgent: CLI > config
     forward_agent = getattr(args, 'forward_agent', False) or host_config.forward_agent
 
+    # Resolve ControlMaster settings: CLI > config
+    control_master_cli = getattr(args, 'control_master', False)
+    control_path_cli = getattr(args, 'control_path', None)
+    control_command = getattr(args, 'control_command', None)
+
     # Parse -o SSH options
     try:
         ssh_options = parse_ssh_options(getattr(args, 'ssh_options', None))
@@ -770,6 +800,40 @@ async def run_command(args: argparse.Namespace) -> int:
     batch_mode = ssh_options.get('batchmode', '').lower() == 'yes'
     visual_host_key = ssh_options.get('visualhostkey', '').lower() == 'yes'
     hash_known_hosts = ssh_options.get('hashknownhosts', '').lower() == 'yes'
+
+    # Merge ControlMaster settings: CLI > -o options > config
+    control_master_opt = ssh_options.get('controlmaster', '')
+    control_path_opt = ssh_options.get('controlpath', '')
+    control_persist_opt = ssh_options.get('controlpersist', '')
+
+    # Determine final control settings
+    # -M flag = ControlMaster=yes
+    if control_master_cli:
+        control_master_mode = 'yes'
+    elif control_master_opt:
+        control_master_mode = control_master_opt.lower()
+    elif host_config.control_master:
+        control_master_mode = host_config.control_master
+    else:
+        control_master_mode = 'no'
+
+    # Control path: CLI -S > -o ControlPath > config
+    if control_path_cli:
+        control_path_template = control_path_cli
+    elif control_path_opt:
+        control_path_template = control_path_opt
+    elif host_config.control_path:
+        control_path_template = host_config.control_path
+    else:
+        control_path_template = None
+
+    # Control persist: -o ControlPersist > config
+    if control_persist_opt:
+        control_persist_value = control_persist_opt
+    elif host_config.control_persist:
+        control_persist_value = host_config.control_persist
+    else:
+        control_persist_value = None
 
     # Parse SendEnv patterns (can be comma-separated or multiple -o SendEnv=)
     send_env_patterns: list[str] = []
@@ -940,6 +1004,97 @@ async def run_command(args: argparse.Namespace) -> int:
         proxy_command = proxy_command.replace("%p", str(port))
         proxy_command = proxy_command.replace("%%", "%")
 
+    # Handle connection multiplexing
+    from nbs_ssh import (
+        ControlMaster,
+        MultiplexClient,
+        expand_control_path,
+        parse_control_persist,
+    )
+
+    # Expand control path if specified
+    control_socket_path = None
+    if control_path_template:
+        control_socket_path = expand_control_path(
+            control_path_template,
+            host=host,
+            port=port,
+            remote_user=username,
+        )
+
+    # Handle -O control commands (don't need SSH connection)
+    if control_command and control_socket_path:
+        client = MultiplexClient(control_socket_path)
+
+        if control_command == "check":
+            if await client.check():
+                print(f"Master running (pid=?)", file=sys.stderr)
+                return 0
+            else:
+                print(f"Control socket connect({control_socket_path}): No such file or directory", file=sys.stderr)
+                return 1
+
+        elif control_command == "exit":
+            if await client.request_exit():
+                print(f"Exit request sent.", file=sys.stderr)
+                return 0
+            else:
+                print(f"Control socket connect({control_socket_path}): No such file or directory", file=sys.stderr)
+                return 1
+
+        elif control_command == "stop":
+            if await client.request_stop():
+                print(f"Stop request sent.", file=sys.stderr)
+                return 0
+            else:
+                print(f"Control socket connect({control_socket_path}): No such file or directory", file=sys.stderr)
+                return 1
+
+        else:
+            print(f"Control command '{control_command}' not yet implemented", file=sys.stderr)
+            return 1
+
+    # Try multiplexed connection if socket exists and not in master mode
+    if (
+        control_socket_path
+        and control_master_mode in ('no', 'auto', 'autoask')
+        and control_socket_path.exists()
+    ):
+        client = MultiplexClient(control_socket_path)
+        if await client.check():
+            # Use multiplexed connection
+            if verbose > 0:
+                print(f"Reusing connection via {control_socket_path}", file=sys.stderr)
+
+            try:
+                if args.command:
+                    # Execute command via master
+                    stdout, stderr, exit_code = await client.exec(
+                        args.command,
+                        env=env_to_send if env_to_send else None,
+                    )
+                    if stdout:
+                        sys.stdout.write(stdout)
+                    if stderr:
+                        sys.stderr.write(stderr)
+                    return exit_code
+                else:
+                    # Interactive shell not supported via multiplex yet
+                    print(
+                        "Interactive shell via multiplexed connection not yet supported. "
+                        "Use direct connection instead.",
+                        file=sys.stderr,
+                    )
+                    return 1
+            except Exception as e:
+                if control_master_mode == 'auto':
+                    # Fall through to direct connection
+                    if verbose > 0:
+                        print(f"Multiplexed connection failed, falling back to direct: {e}", file=sys.stderr)
+                else:
+                    print(f"Multiplexed connection error: {e}", file=sys.stderr)
+                    return 1
+
     try:
         async with SSHConnection(
             host=host,
@@ -1023,6 +1178,32 @@ async def run_command(args: argparse.Namespace) -> int:
                     print(f"Error: {e}", file=sys.stderr)
                     return 1
 
+            # Start ControlMaster server if in master mode
+            control_master_server = None
+            if control_master_mode in ('yes', 'auto', 'autoask') and control_socket_path:
+                # In 'auto' mode, only become master if socket doesn't exist
+                should_become_master = (
+                    control_master_mode == 'yes'
+                    or not control_socket_path.exists()
+                )
+
+                if should_become_master:
+                    persist_time = None
+                    if control_persist_value:
+                        try:
+                            persist_time = parse_control_persist(control_persist_value)
+                        except ValueError as e:
+                            print(f"Warning: Invalid ControlPersist value: {e}", file=sys.stderr)
+
+                    control_master_server = ControlMaster(
+                        socket_path=control_socket_path,
+                        persist_time=persist_time,
+                    )
+                    await control_master_server.start(conn._conn)
+
+                    if verbose > 0:
+                        print(f"ControlMaster started at {control_socket_path}", file=sys.stderr)
+
             # Handle -N (no command, forwarding only)
             no_command = getattr(args, 'no_command', False)
             if no_command:
@@ -1054,6 +1235,10 @@ async def run_command(args: argparse.Namespace) -> int:
                     # Close all forwards
                     for handle in forward_handles:
                         await handle.close()
+
+                    # Stop control master if running
+                    if control_master_server:
+                        await control_master_server.stop()
                 exit_code = 0
             elif args.command:
                 # Determine terminal type based on -t/-T flags
@@ -1085,6 +1270,10 @@ async def run_command(args: argparse.Namespace) -> int:
                 # Close all forwards
                 for handle in forward_handles:
                     await handle.close()
+
+                # Stop control master if running
+                if control_master_server:
+                    await control_master_server.stop()
             else:
                 # No command - open interactive shell
                 # Get escape character from args
@@ -1100,6 +1289,10 @@ async def run_command(args: argparse.Namespace) -> int:
                 # Close all forwards
                 for handle in forward_handles:
                     await handle.close()
+
+                # Stop control master if running
+                if control_master_server:
+                    await control_master_server.stop()
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
