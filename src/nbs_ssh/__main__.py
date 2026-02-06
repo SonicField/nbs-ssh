@@ -10,6 +10,10 @@ Usage:
     python -m nbs_ssh --keyboard-interactive user@host command
     python -m nbs_ssh -I /usr/lib/opensc-pkcs11.so user@host command  # PKCS#11
     python -m nbs_ssh --events user@host command
+    python -m nbs_ssh -L 8080:localhost:80 user@host  # Local forward
+    python -m nbs_ssh -R 9090:localhost:3000 user@host  # Remote forward
+    python -m nbs_ssh -D 1080 user@host  # Dynamic SOCKS
+    python -m nbs_ssh -N -L 8080:localhost:80 user@host  # Forwarding only
     python -m nbs_ssh --help
 """
 from __future__ import annotations
@@ -17,7 +21,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import logging
 import os
+import re
+import signal
 import sys
 from pathlib import Path
 
@@ -125,6 +132,109 @@ def parse_target(target: str) -> tuple[str, str | None]:
     return target, None
 
 
+def parse_local_forward(spec: str) -> tuple[str | None, int, str, int]:
+    """
+    Parse local forward specification.
+
+    Formats:
+        port:host:hostport          → (None, port, host, hostport)
+        bind_addr:port:host:hostport → (bind_addr, port, host, hostport)
+        *:port:host:hostport        → ("", port, host, hostport)
+
+    Args:
+        spec: Forward specification string
+
+    Returns:
+        Tuple of (bind_host, bind_port, dest_host, dest_port)
+
+    Raises:
+        ValueError: If spec format is invalid
+    """
+    # Handle IPv6 addresses in brackets
+    # Pattern: [bind_addr]:port:host:hostport or port:host:hostport
+    ipv6_pattern = r'^\[([^\]]+)\]:(\d+):(.+):(\d+)$'
+    match = re.match(ipv6_pattern, spec)
+    if match:
+        bind_host, bind_port, dest_host, dest_port = match.groups()
+        return bind_host, int(bind_port), dest_host, int(dest_port)
+
+    parts = spec.split(":")
+    if len(parts) == 3:
+        # port:host:hostport
+        return None, int(parts[0]), parts[1], int(parts[2])
+    elif len(parts) == 4:
+        # bind_addr:port:host:hostport
+        bind_host = "" if parts[0] == "*" else parts[0]
+        return bind_host, int(parts[1]), parts[2], int(parts[3])
+    else:
+        raise ValueError(
+            f"Invalid local forward spec: {spec!r}. "
+            "Expected [bind_addr:]port:host:hostport"
+        )
+
+
+def parse_remote_forward(spec: str) -> tuple[str | None, int, str, int]:
+    """
+    Parse remote forward specification.
+
+    Formats:
+        port:host:hostport          → (None, port, host, hostport)
+        bind_addr:port:host:hostport → (bind_addr, port, host, hostport)
+        *:port:host:hostport        → ("", port, host, hostport)
+
+    Args:
+        spec: Forward specification string
+
+    Returns:
+        Tuple of (bind_host, bind_port, dest_host, dest_port)
+
+    Raises:
+        ValueError: If spec format is invalid
+    """
+    # Same parsing as local forward
+    return parse_local_forward(spec)
+
+
+def parse_dynamic_forward(spec: str) -> tuple[str | None, int]:
+    """
+    Parse dynamic (SOCKS) forward specification.
+
+    Formats:
+        port            → (None, port)
+        bind_addr:port  → (bind_addr, port)
+        *:port          → ("", port)
+
+    Args:
+        spec: Forward specification string
+
+    Returns:
+        Tuple of (bind_host, bind_port)
+
+    Raises:
+        ValueError: If spec format is invalid
+    """
+    # Handle IPv6 addresses in brackets
+    ipv6_pattern = r'^\[([^\]]+)\]:(\d+)$'
+    match = re.match(ipv6_pattern, spec)
+    if match:
+        bind_host, bind_port = match.groups()
+        return bind_host, int(bind_port)
+
+    parts = spec.split(":")
+    if len(parts) == 1:
+        # port only
+        return None, int(parts[0])
+    elif len(parts) == 2:
+        # bind_addr:port
+        bind_host = "" if parts[0] == "*" else parts[0]
+        return bind_host, int(parts[1])
+    else:
+        raise ValueError(
+            f"Invalid dynamic forward spec: {spec!r}. "
+            "Expected [bind_addr:]port"
+        )
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create the argument parser for nbs-ssh CLI."""
     parser = argparse.ArgumentParser(
@@ -230,8 +340,51 @@ def create_parser() -> argparse.ArgumentParser:
         help="Connection timeout in seconds (default: 30)",
     )
 
+    # Port forwarding options (OpenSSH parity)
     parser.add_argument(
-        "-v", "--version",
+        "-L", "--local-forward",
+        metavar="[BIND:]PORT:HOST:HOSTPORT",
+        action="append",
+        dest="local_forward",
+        help="Forward local port to remote host:port. "
+             "Can be specified multiple times.",
+    )
+
+    parser.add_argument(
+        "-R", "--remote-forward",
+        metavar="[BIND:]PORT:HOST:HOSTPORT",
+        action="append",
+        dest="remote_forward",
+        help="Forward remote port to local host:port. "
+             "Can be specified multiple times.",
+    )
+
+    parser.add_argument(
+        "-D", "--dynamic-forward",
+        metavar="[BIND:]PORT",
+        action="append",
+        dest="dynamic_forward",
+        help="Dynamic SOCKS port forwarding. "
+             "Can be specified multiple times.",
+    )
+
+    parser.add_argument(
+        "-N", "--no-command",
+        action="store_true",
+        dest="no_command",
+        help="Do not execute remote command (forwarding only mode)",
+    )
+
+    parser.add_argument(
+        "--verbose",
+        action="count",
+        default=0,
+        help="Verbose mode (use multiple times for more verbosity: "
+             "--verbose, --verbose --verbose, etc.)",
+    )
+
+    parser.add_argument(
+        "-V", "--version",
         action="version",
         version="%(prog)s 0.1.0",
     )
@@ -250,6 +403,7 @@ async def run_command(args: argparse.Namespace) -> int:
         Exit code from remote command (or 1 on error)
     """
     from nbs_ssh import (
+        ForwardManager,
         SSHConnection,
         check_gssapi_available,
         check_pkcs11_available,
@@ -263,6 +417,21 @@ async def run_command(args: argparse.Namespace) -> int:
         get_default_key_paths,
     )
     from nbs_ssh.events import EventCollector
+
+    # Set up logging based on verbosity
+    verbose = getattr(args, 'verbose', 0)
+    if verbose > 0:
+        level = logging.DEBUG if verbose >= 2 else logging.INFO
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            stream=sys.stderr,
+        )
+        # Also enable asyncssh logging at appropriate level
+        if verbose >= 3:
+            logging.getLogger("asyncssh").setLevel(logging.DEBUG)
+        elif verbose >= 2:
+            logging.getLogger("asyncssh").setLevel(logging.INFO)
 
     # Parse target
     host, target_user = parse_target(args.target)
@@ -390,7 +559,105 @@ async def run_command(args: argparse.Namespace) -> int:
             proxy_jump=getattr(args, 'proxy_jump', None),
             proxy_command=proxy_command,
         ) as conn:
-            if args.command:
+            # Set up port forwarding if requested
+            forward_manager = ForwardManager(emitter=event_collector)
+            forward_manager.set_connection(conn._conn)  # Access underlying asyncssh connection
+
+            forward_handles = []
+
+            # Set up local forwards (-L)
+            for spec in getattr(args, 'local_forward', None) or []:
+                try:
+                    bind_host, bind_port, dest_host, dest_port = parse_local_forward(spec)
+                    handle = await forward_manager.forward_local(
+                        local_port=bind_port,
+                        remote_host=dest_host,
+                        remote_port=dest_port,
+                        local_host=bind_host or "localhost",
+                    )
+                    forward_handles.append(handle)
+                    if verbose > 0:
+                        print(
+                            f"Local forward: {bind_host or 'localhost'}:{handle.local_port} -> "
+                            f"{dest_host}:{dest_port}",
+                            file=sys.stderr,
+                        )
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    return 1
+
+            # Set up remote forwards (-R)
+            for spec in getattr(args, 'remote_forward', None) or []:
+                try:
+                    bind_host, bind_port, dest_host, dest_port = parse_remote_forward(spec)
+                    handle = await forward_manager.forward_remote(
+                        remote_port=bind_port,
+                        local_host=dest_host,
+                        local_port=dest_port,
+                        remote_host=bind_host or "localhost",
+                    )
+                    forward_handles.append(handle)
+                    if verbose > 0:
+                        print(
+                            f"Remote forward: {bind_host or 'localhost'}:{handle.local_port} -> "
+                            f"{dest_host}:{dest_port}",
+                            file=sys.stderr,
+                        )
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    return 1
+
+            # Set up dynamic forwards (-D)
+            for spec in getattr(args, 'dynamic_forward', None) or []:
+                try:
+                    bind_host, bind_port = parse_dynamic_forward(spec)
+                    handle = await forward_manager.forward_dynamic(
+                        local_port=bind_port,
+                        local_host=bind_host or "localhost",
+                    )
+                    forward_handles.append(handle)
+                    if verbose > 0:
+                        print(
+                            f"Dynamic SOCKS forward: {bind_host or 'localhost'}:{handle.local_port}",
+                            file=sys.stderr,
+                        )
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    return 1
+
+            # Handle -N (no command, forwarding only)
+            no_command = getattr(args, 'no_command', False)
+            if no_command:
+                # Just keep connection alive for forwarding
+                if verbose > 0:
+                    print(
+                        f"Forwarding mode active. Press Ctrl+C to exit.",
+                        file=sys.stderr,
+                    )
+                # Set up signal handler for clean exit
+                stop_event = asyncio.Event()
+
+                def signal_handler():
+                    stop_event.set()
+
+                loop = asyncio.get_event_loop()
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        loop.add_signal_handler(sig, signal_handler)
+                    except NotImplementedError:
+                        # Windows doesn't support add_signal_handler
+                        pass
+
+                try:
+                    await stop_event.wait()
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    # Close all forwards
+                    for handle in forward_handles:
+                        await handle.close()
+                exit_code = 0
+            elif args.command:
                 result = await conn.exec(args.command)
 
                 # Output stdout to stdout, stderr to stderr
@@ -400,6 +667,10 @@ async def run_command(args: argparse.Namespace) -> int:
                     sys.stderr.write(result.stderr)
 
                 exit_code = result.exit_code
+
+                # Close all forwards
+                for handle in forward_handles:
+                    await handle.close()
             else:
                 # No command - open interactive shell
                 try:
@@ -409,6 +680,10 @@ async def run_command(args: argparse.Namespace) -> int:
                     print(f"Connected to {username}@{host}:{args.port}", file=sys.stderr)
                     print(f"(Interactive shell not available: {e})", file=sys.stderr)
                     exit_code = 0
+
+                # Close all forwards
+                for handle in forward_handles:
+                    await handle.close()
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

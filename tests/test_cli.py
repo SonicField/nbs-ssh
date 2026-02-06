@@ -595,3 +595,211 @@ class TestKnownHostsDefault:
             assert captured_policy == HostKeyPolicy.INSECURE
         finally:
             cli_module.getpass.getpass = original_getpass
+
+
+class TestForwardingParsing:
+    """Tests for port forwarding specification parsing."""
+
+    def test_parse_local_forward_simple(self) -> None:
+        """Test parsing simple local forward spec (port:host:hostport)."""
+        from nbs_ssh.__main__ import parse_local_forward
+
+        bind_host, bind_port, dest_host, dest_port = parse_local_forward("8080:localhost:80")
+        assert bind_host is None
+        assert bind_port == 8080
+        assert dest_host == "localhost"
+        assert dest_port == 80
+
+    def test_parse_local_forward_with_bind_addr(self) -> None:
+        """Test parsing local forward with bind address."""
+        from nbs_ssh.__main__ import parse_local_forward
+
+        bind_host, bind_port, dest_host, dest_port = parse_local_forward(
+            "127.0.0.1:8080:localhost:80"
+        )
+        assert bind_host == "127.0.0.1"
+        assert bind_port == 8080
+        assert dest_host == "localhost"
+        assert dest_port == 80
+
+    def test_parse_local_forward_wildcard(self) -> None:
+        """Test parsing local forward with wildcard bind (*)."""
+        from nbs_ssh.__main__ import parse_local_forward
+
+        bind_host, bind_port, dest_host, dest_port = parse_local_forward(
+            "*:8080:localhost:80"
+        )
+        assert bind_host == ""  # Empty string means bind to all interfaces
+        assert bind_port == 8080
+        assert dest_host == "localhost"
+        assert dest_port == 80
+
+    def test_parse_local_forward_invalid(self) -> None:
+        """Test parsing invalid local forward spec raises ValueError."""
+        from nbs_ssh.__main__ import parse_local_forward
+
+        import pytest
+
+        with pytest.raises(ValueError, match="Invalid local forward spec"):
+            parse_local_forward("invalid")
+
+        with pytest.raises(ValueError, match="Invalid local forward spec"):
+            parse_local_forward("8080:localhost")  # Missing hostport
+
+    def test_parse_remote_forward(self) -> None:
+        """Test parsing remote forward spec (same format as local)."""
+        from nbs_ssh.__main__ import parse_remote_forward
+
+        bind_host, bind_port, dest_host, dest_port = parse_remote_forward(
+            "9090:localhost:3000"
+        )
+        assert bind_host is None
+        assert bind_port == 9090
+        assert dest_host == "localhost"
+        assert dest_port == 3000
+
+    def test_parse_dynamic_forward_simple(self) -> None:
+        """Test parsing simple dynamic forward spec (port only)."""
+        from nbs_ssh.__main__ import parse_dynamic_forward
+
+        bind_host, bind_port = parse_dynamic_forward("1080")
+        assert bind_host is None
+        assert bind_port == 1080
+
+    def test_parse_dynamic_forward_with_bind_addr(self) -> None:
+        """Test parsing dynamic forward with bind address."""
+        from nbs_ssh.__main__ import parse_dynamic_forward
+
+        bind_host, bind_port = parse_dynamic_forward("127.0.0.1:1080")
+        assert bind_host == "127.0.0.1"
+        assert bind_port == 1080
+
+    def test_parse_dynamic_forward_wildcard(self) -> None:
+        """Test parsing dynamic forward with wildcard bind."""
+        from nbs_ssh.__main__ import parse_dynamic_forward
+
+        bind_host, bind_port = parse_dynamic_forward("*:1080")
+        assert bind_host == ""
+        assert bind_port == 1080
+
+    def test_parse_dynamic_forward_invalid(self) -> None:
+        """Test parsing invalid dynamic forward spec raises ValueError."""
+        from nbs_ssh.__main__ import parse_dynamic_forward
+
+        import pytest
+
+        with pytest.raises(ValueError, match="Invalid dynamic forward spec"):
+            parse_dynamic_forward("a:b:c")  # Too many colons
+
+
+class TestForwardingCLIArgs:
+    """Tests for forwarding CLI argument parsing."""
+
+    def test_local_forward_arg(self) -> None:
+        """Test -L argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-L", "8080:localhost:80", "host.example.com"])
+
+        assert args.local_forward == ["8080:localhost:80"]
+
+    def test_multiple_local_forwards(self) -> None:
+        """Test multiple -L arguments are collected."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args([
+            "-L", "8080:localhost:80",
+            "-L", "8443:localhost:443",
+            "host.example.com",
+        ])
+
+        assert args.local_forward == ["8080:localhost:80", "8443:localhost:443"]
+
+    def test_remote_forward_arg(self) -> None:
+        """Test -R argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-R", "9090:localhost:3000", "host.example.com"])
+
+        assert args.remote_forward == ["9090:localhost:3000"]
+
+    def test_dynamic_forward_arg(self) -> None:
+        """Test -D argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-D", "1080", "host.example.com"])
+
+        assert args.dynamic_forward == ["1080"]
+
+    def test_no_command_arg(self) -> None:
+        """Test -N argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-N", "-L", "8080:localhost:80", "host.example.com"])
+
+        assert args.no_command is True
+        assert args.local_forward == ["8080:localhost:80"]
+
+    def test_verbose_arg(self) -> None:
+        """Test --verbose argument is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+
+        # Single verbose
+        args = parser.parse_args(["--verbose", "host.example.com"])
+        assert args.verbose == 1
+
+        # Double verbose
+        args = parser.parse_args(["--verbose", "--verbose", "host.example.com"])
+        assert args.verbose == 2
+
+    def test_combined_forwarding_options(self) -> None:
+        """Test combining multiple forwarding options."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args([
+            "-L", "8080:localhost:80",
+            "-R", "9090:localhost:3000",
+            "-D", "1080",
+            "-N",
+            "host.example.com",
+        ])
+
+        assert args.local_forward == ["8080:localhost:80"]
+        assert args.remote_forward == ["9090:localhost:3000"]
+        assert args.dynamic_forward == ["1080"]
+        assert args.no_command is True
+
+
+class TestForwardingHelpOutput:
+    """Tests for forwarding options in help output."""
+
+    def test_help_shows_forwarding_options(self) -> None:
+        """Test --help shows forwarding options."""
+        result = subprocess.run(
+            [sys.executable, "-m", "nbs_ssh", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+            env={
+                **subprocess.os.environ,
+                "PYTHONPATH": str(Path(__file__).parent.parent / "src"),
+            },
+        )
+
+        assert result.returncode == 0
+        assert "-L" in result.stdout
+        assert "-R" in result.stdout
+        assert "-D" in result.stdout
+        assert "-N" in result.stdout
+        assert "--verbose" in result.stdout
+        assert "local-forward" in result.stdout
+        assert "remote-forward" in result.stdout
+        assert "dynamic-forward" in result.stdout
