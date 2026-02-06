@@ -437,6 +437,21 @@ def create_parser() -> argparse.ArgumentParser:
         version="%(prog)s 0.1.0",
     )
 
+    # SSH config file options
+    parser.add_argument(
+        "-F", "--config-file",
+        metavar="FILE",
+        dest="config_file",
+        help="Use specified config file instead of ~/.ssh/config",
+    )
+
+    parser.add_argument(
+        "-G", "--print-config",
+        action="store_true",
+        dest="print_config",
+        help="Print resolved configuration and exit (like ssh -G)",
+    )
+
     return parser
 
 
@@ -464,6 +479,7 @@ async def run_command(args: argparse.Namespace) -> int:
         get_agent_available,
         get_default_key_paths,
     )
+    from nbs_ssh.config import SSHConfig
     from nbs_ssh.events import EventCollector
 
     # Set up logging based on verbosity and quiet mode
@@ -491,13 +507,72 @@ async def run_command(args: argparse.Namespace) -> int:
         elif verbose >= 2:
             logging.getLogger("asyncssh").setLevel(logging.INFO)
 
-    # Parse target
-    host, target_user = parse_target(args.target)
-    username = args.login or target_user
+    # Parse target to get host alias and optional user
+    host_alias, target_user = parse_target(args.target)
 
+    # Load SSH config file(s)
+    # Precedence: CLI args > user config > system config
+    config_file = getattr(args, 'config_file', None)
+    if config_file:
+        # Use only the specified config file
+        ssh_config = SSHConfig(config_files=[config_file], load_system_config=False)
+    else:
+        # Use default ~/.ssh/config and /etc/ssh/ssh_config
+        ssh_config = SSHConfig()
+
+    # Look up host configuration
+    host_config = ssh_config.lookup(host_alias)
+
+    # Handle -G (print config and exit)
+    if getattr(args, 'print_config', False):
+        # Print resolved configuration like ssh -G
+        print(f"host {host_alias}")
+        print(f"hostname {host_config.get_hostname(host_alias)}")
+        print(f"port {host_config.get_port(args.port)}")
+        user = args.login or target_user or host_config.user
+        if user:
+            print(f"user {user}")
+        if host_config.identity_file:
+            for identity in host_config.identity_file:
+                print(f"identityfile {identity}")
+        if host_config.forward_agent:
+            print("forwardagent yes")
+        if host_config.proxy_command:
+            print(f"proxycommand {host_config.proxy_command}")
+        if host_config.proxy_jump:
+            print(f"proxyjump {host_config.proxy_jump}")
+        if host_config.identities_only:
+            print("identitiesonly yes")
+        if host_config.connect_timeout:
+            print(f"connecttimeout {host_config.connect_timeout}")
+        return 0
+
+    # Resolve actual hostname (HostName directive or original)
+    host = host_config.get_hostname(host_alias)
+
+    # Resolve username: CLI args > config > current user
+    # -l option takes precedence, then user@host, then config
+    username = args.login or target_user
     if not username:
-        # Default to current user
-        username = os.environ.get("USER", os.environ.get("USERNAME", "root"))
+        username = host_config.get_user()
+
+    # Resolve port: CLI arg (if non-default) > config > default
+    # Only use config port if CLI port wasn't explicitly set
+    port = args.port
+    if port == 22 and host_config.port is not None:
+        port = host_config.port
+
+    # Resolve timeout: CLI arg > config > default
+    timeout = args.timeout
+    if timeout == 30.0 and host_config.connect_timeout is not None:
+        timeout = float(host_config.connect_timeout)
+
+    # Resolve proxy settings: CLI > config
+    proxy_jump = getattr(args, 'proxy_jump', None) or host_config.proxy_jump
+    proxy_command = getattr(args, 'proxy_command', None) or host_config.proxy_command
+
+    # Resolve ForwardAgent: CLI > config
+    forward_agent = getattr(args, 'forward_agent', False) or host_config.forward_agent
 
     # Track secrets for eradication after use
     secrets_to_eradicate: list[SecureString] = []
@@ -505,12 +580,18 @@ async def run_command(args: argparse.Namespace) -> int:
     # Build auth config
     auth_configs = []
 
+    # CLI identity file takes priority
     if args.identity:
         key_path = Path(args.identity).expanduser()
         if not key_path.exists():
             print(f"Error: Key file not found: {key_path}", file=sys.stderr)
             return 1
         auth_configs.append(create_key_auth(key_path))
+    elif host_config.identity_file:
+        # Use identity files from config if no CLI identity specified
+        for key_path in host_config.identity_file:
+            if key_path.exists() and os.access(key_path, os.R_OK):
+                auth_configs.append(create_key_auth(key_path))
 
     if args.password:
         password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
@@ -555,14 +636,15 @@ async def run_command(args: argparse.Namespace) -> int:
         if check_gssapi_available():
             auth_configs.append(create_gssapi_auth())
 
-        # Try SSH agent
-        if get_agent_available():
+        # Try SSH agent (unless IdentitiesOnly is set in config)
+        if get_agent_available() and not host_config.identities_only:
             auth_configs.append(create_agent_auth())
 
-        # Try default key paths (only if readable)
-        for key_path in get_default_key_paths():
-            if key_path.exists() and os.access(key_path, os.R_OK):
-                auth_configs.append(create_key_auth(key_path))
+        # Try default key paths (only if readable, and only if not IdentitiesOnly)
+        if not host_config.identities_only:
+            for key_path in get_default_key_paths():
+                if key_path.exists() and os.access(key_path, os.R_OK):
+                    auth_configs.append(create_key_auth(key_path))
 
         # If still nothing, fall back to password (with keyboard-interactive as backup)
         if not auth_configs:
@@ -596,27 +678,26 @@ async def run_command(args: argparse.Namespace) -> int:
     # Set up callback for ASK policy
     on_unknown_host_key = cli_unknown_host_callback if host_key_policy == HostKeyPolicy.ASK else None
 
-    # Expand tokens in proxy_command if provided
-    proxy_command = getattr(args, 'proxy_command', None)
+    # Expand tokens in proxy_command if provided (already resolved from CLI or config)
     if proxy_command:
         # Expand %h and %p tokens
         proxy_command = proxy_command.replace("%h", host)
-        proxy_command = proxy_command.replace("%p", str(args.port))
+        proxy_command = proxy_command.replace("%p", str(port))
         proxy_command = proxy_command.replace("%%", "%")
 
     try:
         async with SSHConnection(
             host=host,
-            port=args.port,
+            port=port,
             username=username,
             auth=auth_configs,
             host_key_policy=host_key_policy,
             on_unknown_host_key=on_unknown_host_key,
             event_collector=event_collector,
-            connect_timeout=args.timeout,
-            proxy_jump=getattr(args, 'proxy_jump', None),
+            connect_timeout=timeout,
+            proxy_jump=proxy_jump,
             proxy_command=proxy_command,
-            agent_forwarding=getattr(args, 'forward_agent', False),
+            agent_forwarding=forward_agent,
             x11_forwarding=getattr(args, 'forward_x11', False) or getattr(args, 'forward_x11_trusted', False),
             compression=getattr(args, 'compress', False),
         ) as conn:

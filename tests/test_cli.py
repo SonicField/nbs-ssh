@@ -1008,3 +1008,553 @@ async def test_extended_options_passed_to_connection() -> None:
     finally:
         cli_module.getpass.getpass = original_getpass
 
+
+class TestSSHConfigIntegration:
+    """Tests for SSH config file integration."""
+
+    def test_config_file_option_parsing(self) -> None:
+        """Test -F option is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-F", "/custom/config", "host.example.com"])
+
+        assert args.config_file == "/custom/config"
+
+    def test_print_config_option_parsing(self) -> None:
+        """Test -G option is parsed correctly."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["-G", "host.example.com"])
+
+        assert args.print_config is True
+
+    def test_default_config_file_is_none(self) -> None:
+        """Test that config_file defaults to None (use default paths)."""
+        from nbs_ssh.__main__ import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["host.example.com"])
+
+        assert args.config_file is None
+
+    @pytest.mark.asyncio
+    async def test_cli_loads_custom_config_file(self) -> None:
+        """
+        Test CLI loads and applies custom SSH config file.
+        """
+        import argparse
+        import tempfile
+        from unittest.mock import patch
+
+        from nbs_ssh.__main__ import run_command
+
+        captured_options = {}
+
+        class MockConnection:
+            def __init__(self, **kwargs):
+                captured_options.update(kwargs)
+                from unittest.mock import MagicMock
+                self._conn = MagicMock()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def exec(self, command, term_type=None):
+                from nbs_ssh.connection import ExecResult
+                return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+        # Create a temp config file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".config", delete=False) as f:
+            f.write("Host myserver\n")
+            f.write("    HostName actual.server.com\n")
+            f.write("    Port 2222\n")
+            f.write("    User admin\n")
+            config_path = f.name
+
+        try:
+            args = argparse.Namespace(
+                target="myserver",
+                command="echo hello",
+                port=22,  # Default, should be overridden by config
+                login=None,
+                identity=None,
+                password=True,
+                keyboard_interactive=False,
+                pkcs11_provider=None,
+                events=False,
+                no_host_check=True,
+                strict_host_key_checking="no",
+                timeout=30.0,
+                proxy_jump=None,
+                proxy_command=None,
+                local_forward=None,
+                remote_forward=None,
+                dynamic_forward=None,
+                no_command=False,
+                verbose=0,
+                forward_agent=False,
+                compress=False,
+                forward_x11=False,
+                forward_x11_trusted=False,
+                force_tty=False,
+                disable_tty=False,
+                quiet=False,
+                config_file=config_path,
+                print_config=False,
+            )
+
+            import nbs_ssh.__main__ as cli_module
+
+            original_getpass = cli_module.getpass.getpass
+            cli_module.getpass.getpass = lambda prompt: "test"
+
+            try:
+                with patch("nbs_ssh.SSHConnection", MockConnection):
+                    await run_command(args)
+
+                # Config file should have set hostname to actual.server.com
+                assert captured_options.get("host") == "actual.server.com"
+                # Config file should have set port to 2222
+                assert captured_options.get("port") == 2222
+                # Config file should have set username to admin
+                assert captured_options.get("username") == "admin"
+            finally:
+                cli_module.getpass.getpass = original_getpass
+        finally:
+            import os
+            os.unlink(config_path)
+
+    @pytest.mark.asyncio
+    async def test_cli_args_override_config(self) -> None:
+        """
+        Test that CLI arguments override SSH config settings.
+        """
+        import argparse
+        import tempfile
+        from unittest.mock import patch
+
+        from nbs_ssh.__main__ import run_command
+
+        captured_options = {}
+
+        class MockConnection:
+            def __init__(self, **kwargs):
+                captured_options.update(kwargs)
+                from unittest.mock import MagicMock
+                self._conn = MagicMock()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def exec(self, command, term_type=None):
+                from nbs_ssh.connection import ExecResult
+                return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+        # Create a temp config file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".config", delete=False) as f:
+            f.write("Host myserver\n")
+            f.write("    HostName actual.server.com\n")
+            f.write("    Port 2222\n")
+            f.write("    User configuser\n")
+            config_path = f.name
+
+        try:
+            # Set explicit port and user from CLI
+            args = argparse.Namespace(
+                target="cliuser@myserver",  # User from CLI target
+                command="echo hello",
+                port=3333,  # Explicit port should override config
+                login=None,
+                identity=None,
+                password=True,
+                keyboard_interactive=False,
+                pkcs11_provider=None,
+                events=False,
+                no_host_check=True,
+                strict_host_key_checking="no",
+                timeout=30.0,
+                proxy_jump=None,
+                proxy_command=None,
+                local_forward=None,
+                remote_forward=None,
+                dynamic_forward=None,
+                no_command=False,
+                verbose=0,
+                forward_agent=False,
+                compress=False,
+                forward_x11=False,
+                forward_x11_trusted=False,
+                force_tty=False,
+                disable_tty=False,
+                quiet=False,
+                config_file=config_path,
+                print_config=False,
+            )
+
+            import nbs_ssh.__main__ as cli_module
+
+            original_getpass = cli_module.getpass.getpass
+            cli_module.getpass.getpass = lambda prompt: "test"
+
+            try:
+                with patch("nbs_ssh.SSHConnection", MockConnection):
+                    await run_command(args)
+
+                # HostName from config should still apply
+                assert captured_options.get("host") == "actual.server.com"
+                # CLI port should override config
+                assert captured_options.get("port") == 3333
+                # CLI user should override config
+                assert captured_options.get("username") == "cliuser"
+            finally:
+                cli_module.getpass.getpass = original_getpass
+        finally:
+            import os
+            os.unlink(config_path)
+
+    @pytest.mark.asyncio
+    async def test_cli_login_option_overrides_config(self) -> None:
+        """
+        Test that -l option overrides SSH config user.
+        """
+        import argparse
+        import tempfile
+        from unittest.mock import patch
+
+        from nbs_ssh.__main__ import run_command
+
+        captured_options = {}
+
+        class MockConnection:
+            def __init__(self, **kwargs):
+                captured_options.update(kwargs)
+                from unittest.mock import MagicMock
+                self._conn = MagicMock()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def exec(self, command, term_type=None):
+                from nbs_ssh.connection import ExecResult
+                return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+        # Create a temp config file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".config", delete=False) as f:
+            f.write("Host myserver\n")
+            f.write("    User configuser\n")
+            config_path = f.name
+
+        try:
+            args = argparse.Namespace(
+                target="myserver",
+                command="echo hello",
+                port=22,
+                login="loginuser",  # -l option should override config
+                identity=None,
+                password=True,
+                keyboard_interactive=False,
+                pkcs11_provider=None,
+                events=False,
+                no_host_check=True,
+                strict_host_key_checking="no",
+                timeout=30.0,
+                proxy_jump=None,
+                proxy_command=None,
+                local_forward=None,
+                remote_forward=None,
+                dynamic_forward=None,
+                no_command=False,
+                verbose=0,
+                forward_agent=False,
+                compress=False,
+                forward_x11=False,
+                forward_x11_trusted=False,
+                force_tty=False,
+                disable_tty=False,
+                quiet=False,
+                config_file=config_path,
+                print_config=False,
+            )
+
+            import nbs_ssh.__main__ as cli_module
+
+            original_getpass = cli_module.getpass.getpass
+            cli_module.getpass.getpass = lambda prompt: "test"
+
+            try:
+                with patch("nbs_ssh.SSHConnection", MockConnection):
+                    await run_command(args)
+
+                # -l option should override config
+                assert captured_options.get("username") == "loginuser"
+            finally:
+                cli_module.getpass.getpass = original_getpass
+        finally:
+            import os
+            os.unlink(config_path)
+
+    @pytest.mark.asyncio
+    async def test_config_proxy_jump_applied(self) -> None:
+        """
+        Test that ProxyJump from config is applied.
+        """
+        import argparse
+        import tempfile
+        from unittest.mock import patch
+
+        from nbs_ssh.__main__ import run_command
+
+        captured_options = {}
+
+        class MockConnection:
+            def __init__(self, **kwargs):
+                captured_options.update(kwargs)
+                from unittest.mock import MagicMock
+                self._conn = MagicMock()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def exec(self, command, term_type=None):
+                from nbs_ssh.connection import ExecResult
+                return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+        # Create a temp config file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".config", delete=False) as f:
+            f.write("Host myserver\n")
+            f.write("    ProxyJump jumphost.example.com\n")
+            config_path = f.name
+
+        try:
+            args = argparse.Namespace(
+                target="myserver",
+                command="echo hello",
+                port=22,
+                login=None,
+                identity=None,
+                password=True,
+                keyboard_interactive=False,
+                pkcs11_provider=None,
+                events=False,
+                no_host_check=True,
+                strict_host_key_checking="no",
+                timeout=30.0,
+                proxy_jump=None,  # Not set on CLI
+                proxy_command=None,
+                local_forward=None,
+                remote_forward=None,
+                dynamic_forward=None,
+                no_command=False,
+                verbose=0,
+                forward_agent=False,
+                compress=False,
+                forward_x11=False,
+                forward_x11_trusted=False,
+                force_tty=False,
+                disable_tty=False,
+                quiet=False,
+                config_file=config_path,
+                print_config=False,
+            )
+
+            import nbs_ssh.__main__ as cli_module
+
+            original_getpass = cli_module.getpass.getpass
+            cli_module.getpass.getpass = lambda prompt: "test"
+
+            try:
+                with patch("nbs_ssh.SSHConnection", MockConnection):
+                    await run_command(args)
+
+                # ProxyJump from config should be applied
+                assert captured_options.get("proxy_jump") == "jumphost.example.com"
+            finally:
+                cli_module.getpass.getpass = original_getpass
+        finally:
+            import os
+            os.unlink(config_path)
+
+    @pytest.mark.asyncio
+    async def test_config_forward_agent_applied(self) -> None:
+        """
+        Test that ForwardAgent from config is applied.
+        """
+        import argparse
+        import tempfile
+        from unittest.mock import patch
+
+        from nbs_ssh.__main__ import run_command
+
+        captured_options = {}
+
+        class MockConnection:
+            def __init__(self, **kwargs):
+                captured_options.update(kwargs)
+                from unittest.mock import MagicMock
+                self._conn = MagicMock()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def exec(self, command, term_type=None):
+                from nbs_ssh.connection import ExecResult
+                return ExecResult(stdout="hello\n", stderr="", exit_code=0)
+
+        # Create a temp config file with ForwardAgent yes
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".config", delete=False) as f:
+            f.write("Host myserver\n")
+            f.write("    ForwardAgent yes\n")
+            config_path = f.name
+
+        try:
+            args = argparse.Namespace(
+                target="myserver",
+                command="echo hello",
+                port=22,
+                login=None,
+                identity=None,
+                password=True,
+                keyboard_interactive=False,
+                pkcs11_provider=None,
+                events=False,
+                no_host_check=True,
+                strict_host_key_checking="no",
+                timeout=30.0,
+                proxy_jump=None,
+                proxy_command=None,
+                local_forward=None,
+                remote_forward=None,
+                dynamic_forward=None,
+                no_command=False,
+                verbose=0,
+                forward_agent=False,  # Not set on CLI
+                compress=False,
+                forward_x11=False,
+                forward_x11_trusted=False,
+                force_tty=False,
+                disable_tty=False,
+                quiet=False,
+                config_file=config_path,
+                print_config=False,
+            )
+
+            import nbs_ssh.__main__ as cli_module
+
+            original_getpass = cli_module.getpass.getpass
+            cli_module.getpass.getpass = lambda prompt: "test"
+
+            try:
+                with patch("nbs_ssh.SSHConnection", MockConnection):
+                    await run_command(args)
+
+                # ForwardAgent from config should be applied
+                assert captured_options.get("agent_forwarding") is True
+            finally:
+                cli_module.getpass.getpass = original_getpass
+        finally:
+            import os
+            os.unlink(config_path)
+
+    @pytest.mark.asyncio
+    async def test_print_config_option(self, capsys) -> None:
+        """
+        Test -G option prints resolved config and exits.
+        """
+        import argparse
+        import tempfile
+
+        from nbs_ssh.__main__ import run_command
+
+        # Create a temp config file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".config", delete=False) as f:
+            f.write("Host myserver\n")
+            f.write("    HostName actual.server.com\n")
+            f.write("    Port 2222\n")
+            f.write("    User admin\n")
+            f.write("    ForwardAgent yes\n")
+            config_path = f.name
+
+        try:
+            args = argparse.Namespace(
+                target="myserver",
+                command=None,
+                port=22,
+                login=None,
+                identity=None,
+                password=False,
+                keyboard_interactive=False,
+                pkcs11_provider=None,
+                events=False,
+                no_host_check=True,
+                strict_host_key_checking="no",
+                timeout=30.0,
+                proxy_jump=None,
+                proxy_command=None,
+                local_forward=None,
+                remote_forward=None,
+                dynamic_forward=None,
+                no_command=False,
+                verbose=0,
+                forward_agent=False,
+                compress=False,
+                forward_x11=False,
+                forward_x11_trusted=False,
+                force_tty=False,
+                disable_tty=False,
+                quiet=False,
+                config_file=config_path,
+                print_config=True,  # -G option
+            )
+
+            exit_code = await run_command(args)
+            assert exit_code == 0
+
+            captured = capsys.readouterr()
+            assert "host myserver" in captured.out
+            assert "hostname actual.server.com" in captured.out
+            assert "port 2222" in captured.out
+            assert "user admin" in captured.out
+            assert "forwardagent yes" in captured.out
+        finally:
+            import os
+            os.unlink(config_path)
+
+
+class TestSSHConfigHelpOutput:
+    """Tests for SSH config options in help output."""
+
+    def test_help_shows_config_options(self) -> None:
+        """Test --help shows -F and -G options."""
+        result = subprocess.run(
+            [sys.executable, "-m", "nbs_ssh", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+            env={
+                **subprocess.os.environ,
+                "PYTHONPATH": str(Path(__file__).parent.parent / "src"),
+            },
+        )
+
+        assert result.returncode == 0
+        assert "-F" in result.stdout
+        assert "-G" in result.stdout
+        assert "config file" in result.stdout.lower()
+
