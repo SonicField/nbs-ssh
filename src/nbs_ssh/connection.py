@@ -831,13 +831,14 @@ class SSHConnection:
         kbdint_config: AuthConfig | None = None
         if auth_config.method == AuthMethod.KEYBOARD_INTERACTIVE:
             kbdint_config = auth_config
+            # Don't provide keys or password — keyboard-interactive uses
+            # the client_factory callbacks exclusively.
             options["client_keys"] = []
             options["password"] = None
-            # Do NOT set preferred_auth — let asyncssh negotiate with the
-            # server.  Some servers (e.g. Meta Duo 2FA) require the client
-            # to attempt publickey before offering keyboard-interactive.
-            # asyncssh's default order (publickey → kbdint → password)
-            # matches OpenSSH behaviour.
+            # Explicitly request keyboard-interactive.  Without this,
+            # asyncssh sees no credentials (empty keys, no password) and
+            # skips auth entirely — never reaching the kbdint callbacks.
+            options["preferred_auth"] = ["keyboard-interactive"]
 
         elif auth_config.method == AuthMethod.PASSWORD:
             if auth_config.password is not None:
