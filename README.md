@@ -23,7 +23,9 @@ Requires Python 3.12+.
 pip install git+https://github.com/SonicField/nbs-ssh.git
 ```
 
-This installs the `nbs-ssh` command into your Python environment's `bin/` directory. It's available directly if you're in an activated venv, or via `pipx` which manages PATH for you.
+On Windows, use `py -m pip` instead of bare `pip`.
+
+This installs the `nbs-ssh` command into your Python environment's `bin/` (or `Scripts/` on Windows) directory. It's available directly if you're in an activated venv, or via `pipx` which manages PATH for you.
 
 ### Using pipx (recommended for CLI use)
 
@@ -41,11 +43,11 @@ brew install pipx
 pipx install git+https://github.com/SonicField/nbs-ssh.git
 ```
 
-**Windows:**
+**Windows (PowerShell):**
 ```powershell
 winget install Python.Python.3.12
-pip install pipx
-pipx install git+https://github.com/SonicField/nbs-ssh.git
+py -m pip install pipx
+py -m pipx install git+https://github.com/SonicField/nbs-ssh.git
 ```
 
 ### Optional Extras
