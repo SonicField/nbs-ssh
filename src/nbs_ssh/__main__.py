@@ -2,22 +2,24 @@
 CLI interface for nbs-ssh.
 
 Usage:
-    python -m nbs_ssh user@host              # Interactive shell
-    python -m nbs_ssh user@host command      # Execute command
-    python -m nbs_ssh -p 2222 user@host command
-    python -m nbs_ssh -i keyfile user@host command
-    python -m nbs_ssh --password user@host command
-    python -m nbs_ssh --keyboard-interactive user@host command
-    python -m nbs_ssh -I /usr/lib/opensc-pkcs11.so user@host command  # PKCS#11
-    python -m nbs_ssh --events user@host command
-    python -m nbs_ssh -L 8080:localhost:80 user@host  # Local forward
-    python -m nbs_ssh -R 9090:localhost:3000 user@host  # Remote forward
-    python -m nbs_ssh -D 1080 user@host  # Dynamic SOCKS
-    python -m nbs_ssh -N -L 8080:localhost:80 user@host  # Forwarding only
-    python -m nbs_ssh -o BatchMode=yes user@host  # Batch mode (no prompting)
-    python -m nbs_ssh -o SendEnv=LANG user@host  # Forward env vars
-    python -m nbs_ssh -o VisualHostKey=yes user@host  # Show host key art
-    python -m nbs_ssh --help
+    nbs-ssh user@host              # Interactive shell
+    nbs-ssh user@host command      # Execute command
+    nbs-ssh -p 2222 user@host command
+    nbs-ssh -i keyfile user@host command
+    nbs-ssh --password user@host command
+    nbs-ssh --keyboard-interactive user@host command
+    nbs-ssh -I /usr/lib/opensc-pkcs11.so user@host command  # PKCS#11
+    nbs-ssh --events user@host command
+    nbs-ssh -L 8080:localhost:80 user@host  # Local forward
+    nbs-ssh -R 9090:localhost:3000 user@host  # Remote forward
+    nbs-ssh -D 1080 user@host  # Dynamic SOCKS
+    nbs-ssh -N -L 8080:localhost:80 user@host  # Forwarding only
+    nbs-ssh -o BatchMode=yes user@host  # Batch mode (no prompting)
+    nbs-ssh -o SendEnv=LANG user@host  # Forward env vars
+    nbs-ssh -o VisualHostKey=yes user@host  # Show host key art
+    nbs-ssh --help
+
+Also available as: python -m nbs_ssh [args...]
 """
 from __future__ import annotations
 

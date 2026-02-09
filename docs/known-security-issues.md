@@ -1,6 +1,6 @@
 # Known Security Issues
 
-**Last Updated:** 2026-02-05
+**Last Updated:** 2026-02-06
 
 ## Disclaimer
 
@@ -46,16 +46,16 @@ The library now includes comprehensive host key verification with OpenSSH-compat
 
 ```bash
 # Default: prompts for unknown hosts (secure, matches OpenSSH)
-python -m nbs_ssh user@host command
+nbs-ssh user@host command
 
 # Explicit disable (for testing)
-python -m nbs_ssh --no-host-check user@host command
+nbs-ssh --no-host-check user@host command
 
 # Accept new hosts automatically, reject changed
-python -m nbs_ssh --strict-host-key-checking=accept-new user@host command
+nbs-ssh --strict-host-key-checking=accept-new user@host command
 
 # Strict mode for scripts (reject unknown hosts)
-python -m nbs_ssh --strict-host-key-checking=yes user@host command
+nbs-ssh --strict-host-key-checking=yes user@host command
 ```
 
 **Library Behaviour:** When using `SSHConnection` directly, use `host_key_policy`:

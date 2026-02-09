@@ -69,19 +69,19 @@ nbs-ssh includes a command-line interface for quick operations:
 
 ```bash
 # Run a command on a remote host
-python -m nbs_ssh alice@example.com "ls -la"
+nbs-ssh alice@example.com "ls -la"
 
 # Use a specific private key
-python -m nbs_ssh -i ~/.ssh/id_ed25519 alice@example.com "whoami"
+nbs-ssh -i ~/.ssh/id_ed25519 alice@example.com "whoami"
 
 # Custom port
-python -m nbs_ssh -p 2222 alice@example.com "date"
+nbs-ssh -p 2222 alice@example.com "date"
 
 # Password authentication (will prompt)
-python -m nbs_ssh --password alice@example.com "echo hello"
+nbs-ssh --password alice@example.com "echo hello"
 
 # Enable event logging to stderr
-python -m nbs_ssh --events alice@example.com "uptime" 2>events.jsonl
+nbs-ssh --events alice@example.com "uptime" 2>events.jsonl
 ```
 
 ## Streaming Output
@@ -172,4 +172,4 @@ except SSHError as e:
 
 - Python 3.12+
 - AsyncSSH library (installed automatically)
-- For testing: Docker (for integration tests with real SSH server)
+- For testing: pytest (all tests use MockSSHServer, no Docker required)

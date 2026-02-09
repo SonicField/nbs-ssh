@@ -50,10 +50,10 @@ async with SSHConnection(
 
 ```bash
 # Log events to stderr (redirect to file)
-python -m nbs_ssh --events alice@example.com "ls" 2>session.jsonl
+nbs-ssh --events alice@example.com "ls" 2>session.jsonl
 
 # View events in real-time
-python -m nbs_ssh --events alice@example.com "ls"
+nbs-ssh --events alice@example.com "ls"
 ```
 
 ---

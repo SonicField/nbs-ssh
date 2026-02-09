@@ -18,34 +18,50 @@ AI-inspectable SSH client library and CLI built on AsyncSSH.
 ## Installation
 
 ```bash
-git clone https://github.com/SonicField/nbs-ssh.git
-cd nbs-ssh
-python3 -m venv venv
-source venv/bin/activate
-pip install -e .
+pip install nbs-ssh
+```
+
+### Platform Prerequisites
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt install pipx
+pipx install nbs-ssh
+```
+
+**macOS:**
+```bash
+brew install python@3.12
+pip install nbs-ssh
+```
+
+**Windows:**
+```powershell
+winget install Python.Python.3.12
+pip install nbs-ssh
+```
+
+### Optional Extras
+
+```bash
+pip install nbs-ssh[fido2]   # FIDO2/YubiKey support
+pip install nbs-ssh[pkcs11]  # Smart card support
+pip install nbs-ssh[all]     # Everything
 ```
 
 ## CLI Usage
 
 ```bash
 # Interactive shell (like ssh)
-python -m nbs_ssh user@host
+nbs-ssh user@host
 
 # Execute command
-python -m nbs_ssh user@host "echo hello"
+nbs-ssh user@host "echo hello"
 
 # With options
-python -m nbs_ssh -p 2222 user@host              # Custom port
-python -m nbs_ssh -i ~/.ssh/id_ed25519 user@host # Specific key
-python -m nbs_ssh --events user@host "cmd"       # JSONL event logging
-```
-
-Add to your shell for convenience:
-```bash
-# In ~/.bashrc or ~/.zshrc
-py-ssh() {
-  PYTHONPATH=~/path/to/nbs-ssh/src ~/path/to/nbs-ssh/venv/bin/python -m nbs_ssh "$@"
-}
+nbs-ssh -p 2222 user@host              # Custom port
+nbs-ssh -i ~/.ssh/id_ed25519 user@host # Specific key
+nbs-ssh --events user@host "cmd"       # JSONL event logging
 ```
 
 ## Library Usage
@@ -208,7 +224,7 @@ async with SSHConnection(
     ...
 ```
 
-CLI: `python -m nbs_ssh -J bastion user@target`
+CLI: `nbs-ssh -J bastion user@target`
 
 ### ProxyCommand
 
@@ -221,7 +237,7 @@ async with SSHConnection(
     ...
 ```
 
-CLI: `python -m nbs_ssh -o "nc proxy %h %p" user@target`
+CLI: `nbs-ssh -o "nc proxy %h %p" user@target`
 
 ## Documentation
 
@@ -237,18 +253,18 @@ nbs-ssh uses a **pure-Python testing approach** with no Docker required.
 
 ```bash
 # Run all tests
-source venv/bin/activate
-PYTHONPATH=src pytest tests/ -v
+pip install -e ".[dev]"
+pytest tests/ -v
 
 # Run specific test file
-PYTHONPATH=src pytest tests/test_connection.py -v
+pytest tests/test_connection.py -v
 ```
 
 ### Key Testing Features
 
 - **MockSSHServer**: A real AsyncSSH server that binds to port 0 for parallel test execution
 - **Falsifiable security tests**: Tests that actively attempt attacks (weak ciphers, downgrade attacks) and verify they fail
-- **No Docker dependency**: All 431 tests run against MockSSHServer
+- **No Docker dependency**: All 736 tests run against MockSSHServer
 - **Real command execution**: MockSSHServer can execute actual shell commands when needed
 
 See [Testing Guide](docs/testing.md) for the full testing philosophy and how to write tests.
@@ -256,9 +272,14 @@ See [Testing Guide](docs/testing.md) for the full testing philosophy and how to 
 ## Development
 
 ```bash
-# Run tests (no Docker required)
+git clone https://github.com/SonicField/nbs-ssh.git
+cd nbs-ssh
+python3 -m venv venv
 source venv/bin/activate
-PYTHONPATH=src pytest tests/ -v
+pip install -e ".[dev]"
+
+# Run tests (no Docker required)
+pytest tests/ -v
 
 # Tests use MockSSHServer - a pure-Python SSH server for testing
 ```

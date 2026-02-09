@@ -6,7 +6,7 @@ The developer working with you is **Dr Alex Turner** (she/her).
 
 ## Terminal Goal
 
-Build an AI-inspectable SSH client library using AsyncSSH that provides exec, streaming exec, port forwarding, automated interaction (expect/respond), supervisor-managed reconnection, and evidence-first diagnostics (JSONL event logs, failure bundles) - all with falsifiable tests against a Docker-based chaos testing rig.
+Build an AI-inspectable SSH client library using AsyncSSH that provides exec, streaming exec, port forwarding, automated interaction (expect/respond), supervisor-managed reconnection, and evidence-first diagnostics (JSONL event logs, failure bundles) - all with falsifiable tests against MockSSHServer.
 
 ## Engineering Standards
 
@@ -34,10 +34,9 @@ pytest tests/
 
 ## Testing
 
-Tests require a Docker-based OpenSSH server. See `docker/` for setup.
+Tests use MockSSHServer — no Docker required.
 
 ```bash
-docker-compose -f docker/docker-compose.yml up -d
 pytest tests/
 ```
 
