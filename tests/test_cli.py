@@ -152,6 +152,7 @@ class TestHelpOutput:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "linux", reason="MockSSHServer CLI tests require Linux (timing-sensitive)")
 async def test_cli_exec_command(mock_ssh_server: "MockSSHServer") -> None:
     """
     Test CLI can execute a command via MockSSHServer.
@@ -188,6 +189,7 @@ async def test_cli_exec_command(mock_ssh_server: "MockSSHServer") -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "linux", reason="MockSSHServer CLI tests require Linux (timing-sensitive)")
 async def test_cli_exit_code_propagation(mock_ssh_server: "MockSSHServer") -> None:
     """
     Test CLI propagates remote command exit code.
@@ -230,6 +232,7 @@ async def test_cli_exit_code_propagation(mock_ssh_server: "MockSSHServer") -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "linux", reason="MockSSHServer CLI tests require Linux (timing-sensitive)")
 async def test_cli_events_output(mock_ssh_server: "MockSSHServer") -> None:
     """
     Test CLI outputs JSONL events with --events flag.
@@ -392,6 +395,7 @@ async def test_cli_uses_default_key_auth() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "linux", reason="MockSSHServer CLI tests require Linux (timing-sensitive)")
 async def test_cli_falls_back_to_password_when_no_keys() -> None:
     """
     Test CLI prompts for password when no agent or keys are available.

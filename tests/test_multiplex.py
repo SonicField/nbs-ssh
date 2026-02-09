@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -188,6 +189,7 @@ class TestControlMessage:
         assert length == len(encoded) - 4
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets not available on Windows")
 class TestControlMaster:
     """Tests for ControlMaster server."""
 
@@ -249,6 +251,7 @@ class TestControlMaster:
                 await master.stop()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets not available on Windows")
 class TestMultiplexClient:
     """Tests for MultiplexClient."""
 
@@ -360,6 +363,7 @@ class TestControlCommands:
         assert ControlCommand.CANCEL.value == "cancel"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets not available on Windows")
 class TestControlPersist:
     """Tests for ControlPersist timeout behaviour."""
 

@@ -206,6 +206,7 @@ class TestKnownHostsPaths:
         assert ssh_dir.exists()
         assert ssh_dir.is_dir()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not available on Windows")
     def test_get_known_hosts_write_path_sets_dir_permissions(self, tmp_path: Path) -> None:
         """get_known_hosts_write_path() creates directory with mode 0o700."""
         ssh_dir = tmp_path / "perm_test" / ".ssh"
@@ -542,6 +543,7 @@ class TestPathValidation:
             assert is_valid is False
             assert "MAX_PATH" in error
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not available on Windows")
     def test_validate_path_unreadable(self, tmp_path: Path) -> None:
         """validate_path() returns False for unreadable file."""
         test_file = tmp_path / "unreadable.txt"
@@ -589,6 +591,7 @@ class TestKeyDiscovery:
         assert id_rsa in result
         assert id_ed25519 in result
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not available on Windows")
     def test_discover_keys_skips_unreadable(self, tmp_path: Path) -> None:
         """discover_keys() skips unreadable key files."""
         ssh_dir = tmp_path / ".ssh"

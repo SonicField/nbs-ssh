@@ -71,6 +71,7 @@ class TestShellMethod:
         assert "AUTH" in event_types
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Interactive shell requires termios (Unix only)")
 class TestShellCLI:
     """Tests for CLI interactive shell mode."""
 

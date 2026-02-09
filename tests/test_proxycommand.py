@@ -12,6 +12,7 @@ Tests the ability to use an arbitrary command as the SSH transport:
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from nbs_ssh.testing.mock_server import MockSSHServer
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets not available on Windows")
 class TestProxyCommandProcess:
     """Tests for ProxyCommandProcess class."""
 
@@ -391,6 +393,7 @@ Host myserver
         assert "%%" not in host_config.proxy_command
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets not available on Windows")
 class TestProxyCommandErrorHandling:
     """Tests for error handling with ProxyCommand."""
 
@@ -425,6 +428,7 @@ class TestProxyCommandErrorHandling:
         assert error_events[0].data.get("error_type") == "proxy_command_failed"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets not available on Windows")
 class TestProxyCommandWithRealConnection:
     """Tests that verify ProxyCommand works with actual connections.
 
