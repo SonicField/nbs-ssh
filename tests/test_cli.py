@@ -183,8 +183,8 @@ async def test_cli_exec_command(mock_ssh_server: "MockSSHServer") -> None:
 
     try:
         # Disable auto-discovery so the CLI falls through to password auth
-        with patch("nbs_ssh.platform.get_agent_available", return_value=False), \
-             patch("nbs_ssh.platform.get_default_key_paths", return_value=[]):
+        with patch("nbs_ssh.get_agent_available", return_value=False), \
+             patch("nbs_ssh.get_default_key_paths", return_value=[]):
             exit_code = await run_command(args)
         assert exit_code == 0
     finally:
@@ -227,8 +227,8 @@ async def test_cli_exit_code_propagation(mock_ssh_server: "MockSSHServer") -> No
         cli_module.getpass.getpass = lambda prompt: "test"
 
         try:
-            with patch("nbs_ssh.platform.get_agent_available", return_value=False), \
-                 patch("nbs_ssh.platform.get_default_key_paths", return_value=[]):
+            with patch("nbs_ssh.get_agent_available", return_value=False), \
+                 patch("nbs_ssh.get_default_key_paths", return_value=[]):
                 exit_code = await run_command(args)
             assert exit_code == 42
         finally:
@@ -270,8 +270,8 @@ async def test_cli_events_output(mock_ssh_server: "MockSSHServer") -> None:
 
     try:
         sys.stderr = captured_stderr
-        with patch("nbs_ssh.platform.get_agent_available", return_value=False), \
-             patch("nbs_ssh.platform.get_default_key_paths", return_value=[]):
+        with patch("nbs_ssh.get_agent_available", return_value=False), \
+             patch("nbs_ssh.get_default_key_paths", return_value=[]):
             exit_code = await run_command(args)
         sys.stderr = original_stderr
 
@@ -434,22 +434,13 @@ async def test_cli_falls_back_to_password_when_no_keys() -> None:
     cli_module.getpass.getpass = tracking_getpass
 
     # Also mock get_agent_available and get_default_key_paths
-    import nbs_ssh.__main__
-
-    # Save originals
-    from nbs_ssh import get_agent_available, get_default_key_paths
-
-    # Patch to return no auth methods
-    nbs_ssh.__main__.get_agent_available = lambda: False
-    nbs_ssh.__main__.get_default_key_paths = lambda: []
-
     try:
-        await run_command(args)  # Will fail to connect, that's OK
+        with patch("nbs_ssh.get_agent_available", return_value=False), \
+             patch("nbs_ssh.get_default_key_paths", return_value=[]):
+            await run_command(args)  # Will fail to connect, that's OK
         assert getpass_called, "Password should be prompted when no agent or keys"
     finally:
         cli_module.getpass.getpass = original_getpass
-        nbs_ssh.__main__.get_agent_available = get_agent_available
-        nbs_ssh.__main__.get_default_key_paths = get_default_key_paths
 
 
 class TestKnownHostsDefault:

@@ -111,8 +111,8 @@ class TestShellCLI:
             # Mock stdin.isatty() to return False, and disable auto-discovery
             # so the CLI falls through to password auth (mocked above)
             with patch.object(sys.stdin, "isatty", return_value=False), \
-                 patch("nbs_ssh.platform.get_agent_available", return_value=False), \
-                 patch("nbs_ssh.platform.get_default_key_paths", return_value=[]):
+                 patch("nbs_ssh.get_agent_available", return_value=False), \
+                 patch("nbs_ssh.get_default_key_paths", return_value=[]):
                 exit_code = await run_command(args)
 
             sys.stderr = original_stderr
@@ -156,8 +156,8 @@ class TestShellCLI:
 
         try:
             # Disable auto-discovery so the CLI falls through to password auth
-            with patch("nbs_ssh.platform.get_agent_available", return_value=False), \
-                 patch("nbs_ssh.platform.get_default_key_paths", return_value=[]):
+            with patch("nbs_ssh.get_agent_available", return_value=False), \
+                 patch("nbs_ssh.get_default_key_paths", return_value=[]):
                 exit_code = await run_command(args)
             assert exit_code == 0
         finally:
