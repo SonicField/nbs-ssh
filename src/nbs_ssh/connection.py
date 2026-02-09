@@ -827,17 +827,22 @@ class SSHConnection:
             else:
                 options["known_hosts"] = self._known_hosts
 
-        # Determine if we need keyboard-interactive
+        # Find keyboard-interactive config from the auth chain.
+        # This is needed for ALL auth attempts, not just the kbdint-specific
+        # one, because servers may require multi-factor auth:
+        #   publickey (partial success) → server offers kbdint → Duo prompt
+        # If we only attach kbdint callbacks to the kbdint-specific attempt,
+        # the publickey attempt can't handle the kbdint follow-up.
         kbdint_config: AuthConfig | None = None
+        for ac in self._auth_configs:
+            if ac.method == AuthMethod.KEYBOARD_INTERACTIVE:
+                kbdint_config = ac
+                break
+
         if auth_config.method == AuthMethod.KEYBOARD_INTERACTIVE:
-            kbdint_config = auth_config
-            # Don't provide keys or password — keyboard-interactive uses
-            # the client_factory callbacks exclusively.
+            # Standalone kbdint attempt: no keys/password, force kbdint
             options["client_keys"] = []
             options["password"] = None
-            # Explicitly request keyboard-interactive.  Without this,
-            # asyncssh sees no credentials (empty keys, no password) and
-            # skips auth entirely — never reaching the kbdint callbacks.
             options["preferred_auth"] = ["keyboard-interactive"]
 
         elif auth_config.method == AuthMethod.PASSWORD:
