@@ -780,6 +780,22 @@ async def run_command(args: argparse.Namespace) -> int:
     if timeout == 30.0 and host_config.connect_timeout is not None:
         timeout = float(host_config.connect_timeout)
 
+    # Log resolved config (ssh -v style)
+    if verbose > 0:
+        logger = logging.getLogger("nbs_ssh.cli")
+        logger.info("Connecting to %s:%d as %s", host, port, username)
+        if host != host_alias:
+            logger.info("HostName resolved: %s → %s", host_alias, host)
+        if host_config.proxy_command:
+            logger.info("ProxyCommand from config: %s", host_config.proxy_command)
+        if host_config.proxy_jump:
+            logger.info("ProxyJump from config: %s", host_config.proxy_jump)
+        if host_config.identity_file:
+            logger.info(
+                "IdentityFile from config: %s",
+                ", ".join(str(p) for p in host_config.identity_file),
+            )
+
     # Resolve proxy settings: CLI > -o options > config
     proxy_jump = getattr(args, 'proxy_jump', None)
     proxy_command = getattr(args, 'proxy_command', None)

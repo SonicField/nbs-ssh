@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import fnmatch
 import getpass
+import logging
 import os
 import re
 import socket
@@ -22,6 +23,8 @@ from pathlib import Path
 from typing import Callable
 
 from nbs_ssh.platform import expand_path, get_config_path, get_system_config_path
+
+log = logging.getLogger("nbs_ssh.config")
 
 
 @dataclass
@@ -158,12 +161,15 @@ class SSHConfig:
     def _load_file(self, config_path: Path) -> None:
         """Load and parse a config file."""
         if not config_path.exists():
+            log.debug("Config file not found: %s", config_path)
             return
 
+        log.debug("Reading configuration data %s", config_path)
         try:
             with open(config_path, "r", encoding="utf-8", errors="replace") as f:
                 self._parse(f.read(), config_path)
         except (OSError, IOError):
+            log.debug("Could not read config file: %s", config_path)
             pass  # Skip unreadable configs
 
     def _parse(self, content: str, source_path: Path | None = None) -> None:
@@ -298,6 +304,7 @@ class SSHConfig:
 
         # Glob to find matching files
         matches = sorted(glob_module.glob(expanded))
+        log.debug("Include %s → %d file(s)", pattern, len(matches))
 
         for match_path in matches:
             path = Path(match_path)

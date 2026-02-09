@@ -12,6 +12,7 @@ Error types are imported from nbs_ssh.errors for programmatic handling.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -19,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Sequence
+
+log = logging.getLogger("nbs_ssh.connection")
 
 if sys.platform != "win32":
     import termios
@@ -602,10 +605,13 @@ class SSHConnection:
 
         # Start ProxyCommand process if configured
         if self._proxy_command is not None:
+            log.info("Starting ProxyCommand: %s", self._proxy_command)
             try:
                 self._proxy_process = ProxyCommandProcess(self._proxy_command)
                 await self._proxy_process.start()
+                log.debug("ProxyCommand started successfully")
             except ProxyCommandError as e:
+                log.error("ProxyCommand failed: %s", e)
                 self._emitter.emit(
                     EventType.ERROR,
                     error_type="proxy_command_failed",
@@ -620,23 +626,33 @@ class SSHConnection:
         last_error: Exception | None = None
         successful_method: str | None = None
 
+        log.info(
+            "Auth methods to try: %s",
+            ", ".join(c.method.value for c in self._auth_configs),
+        )
+
         # Track auth timing
         self._timing.auth_start_ms = time.time() * 1000
 
         for i, auth_config in enumerate(self._auth_configs):
             auth_start_ms = time.time() * 1000
+            method_name = auth_config.method.value
+
+            log.info("Trying auth method: %s", method_name)
 
             # ProxyCommand: restart the proxy for each attempt after the first.
             # asyncssh.connect() consumes the socket — after an auth failure the
             # SSH connection closes, taking the socket with it.  Subsequent
             # attempts need a fresh socket (and thus a fresh proxy process).
             if self._proxy_command is not None and i > 0:
+                log.debug("Restarting ProxyCommand for attempt %d", i + 1)
                 if self._proxy_process is not None:
                     await self._proxy_process.close()
                 try:
                     self._proxy_process = ProxyCommandProcess(self._proxy_command)
                     await self._proxy_process.start()
                 except ProxyCommandError as e:
+                    log.error("ProxyCommand restart failed: %s", e)
                     self._emitter.emit(
                         EventType.ERROR,
                         error_type="proxy_command_failed",
@@ -651,6 +667,10 @@ class SSHConnection:
                 await self._try_auth_method(auth_config)
                 successful_method = auth_config.method.value
                 auth_duration_ms = (time.time() * 1000) - auth_start_ms
+
+                log.info(
+                    "Auth succeeded: %s (%.0fms)", method_name, auth_duration_ms
+                )
 
                 # Track timing
                 self._timing.auth_end_ms = time.time() * 1000
@@ -674,6 +694,13 @@ class SSHConnection:
             ) as e:
                 auth_duration_ms = (time.time() * 1000) - auth_start_ms
                 last_error = e
+                log.info(
+                    "Auth failed: %s — %s: %s (%.0fms)",
+                    method_name,
+                    type(e).__name__,
+                    e,
+                    auth_duration_ms,
+                )
 
                 self._emitter.emit(
                     EventType.AUTH,
@@ -689,6 +716,12 @@ class SSHConnection:
 
             except Exception as e:
                 # Non-auth error, don't try other methods
+                log.error(
+                    "Non-auth error during %s — aborting: %s: %s",
+                    method_name,
+                    type(e).__name__,
+                    e,
+                )
                 last_error = e
                 mapped_error = self._map_exception(e, error_ctx)
                 self._emitter.emit(
