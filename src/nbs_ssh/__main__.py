@@ -553,11 +553,10 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--verbose",
+        "-v", "--verbose",
         action="count",
         default=0,
-        help="Verbose mode (use multiple times for more verbosity: "
-             "--verbose, --verbose --verbose, etc.)",
+        help="Verbose mode (-v info, -vv debug, -vvv asyncssh debug)",
     )
 
     # Extended OpenSSH-compatible options
