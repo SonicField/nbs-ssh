@@ -840,10 +840,13 @@ class SSHConnection:
                 break
 
         if auth_config.method == AuthMethod.KEYBOARD_INTERACTIVE:
-            # Standalone kbdint attempt: no keys/password, force kbdint
-            options["client_keys"] = []
+            # Standalone kbdint: don't set client_keys or password.
+            # Leaving client_keys unset lets asyncssh discover the agent
+            # and attempt publickey first.  If publickey fails, asyncssh
+            # falls through to keyboard-interactive using our callbacks.
+            # Setting client_keys=[] explicitly tells asyncssh "no keys"
+            # which can cause it to skip auth entirely.
             options["password"] = None
-            options["preferred_auth"] = ["keyboard-interactive"]
 
         elif auth_config.method == AuthMethod.PASSWORD:
             if auth_config.password is not None:
