@@ -149,7 +149,7 @@ class TestHelpOutput:
         )
 
         assert result.returncode == 0
-        assert "0.1.3" in result.stdout
+        assert "0.1.4" in result.stdout
 
 
 @pytest.mark.asyncio
@@ -402,7 +402,12 @@ async def test_cli_uses_default_key_auth() -> None:
 @pytest.mark.asyncio
 async def test_cli_falls_back_to_password_when_no_keys() -> None:
     """
-    Test CLI prompts for password when no agent or keys are available.
+    Test CLI tries keyboard-interactive before password when no agent/keys.
+
+    OpenSSH discovery order: publickey → keyboard-interactive → password.
+    When no agent or keys exist, keyboard-interactive should be tried
+    first (handles Duo/2FA). Password prompt only happens as a retry
+    after auth failure against a reachable server.
     """
     import argparse
 
@@ -422,7 +427,7 @@ async def test_cli_falls_back_to_password_when_no_keys() -> None:
 
     import nbs_ssh.__main__ as cli_module
 
-    # Mock both agent check and key paths to return nothing
+    # Track whether password was prompted eagerly (it shouldn't be)
     original_getpass = cli_module.getpass.getpass
     getpass_called = False
 
@@ -433,12 +438,17 @@ async def test_cli_falls_back_to_password_when_no_keys() -> None:
 
     cli_module.getpass.getpass = tracking_getpass
 
-    # Also mock get_agent_available and get_default_key_paths
     try:
         with patch("nbs_ssh.get_agent_available", return_value=False), \
              patch("nbs_ssh.get_default_key_paths", return_value=[]):
             await run_command(args)  # Will fail to connect, that's OK
-        assert getpass_called, "Password should be prompted when no agent or keys"
+        # Password should NOT be prompted eagerly — keyboard-interactive
+        # is tried first. Password only prompted on auth failure retry
+        # against a reachable server.
+        assert not getpass_called, (
+            "Password should not be prompted eagerly when keyboard-interactive "
+            "is available"
+        )
     finally:
         cli_module.getpass.getpass = original_getpass
 

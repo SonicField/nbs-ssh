@@ -621,7 +621,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="%(prog)s 0.1.3",
+        version="%(prog)s 0.1.4",
     )
 
     # SSH config file options
@@ -967,7 +967,14 @@ async def run_command(args: argparse.Namespace) -> int:
                 if key_path.exists() and os.access(key_path, os.R_OK):
                     auth_configs.append(create_key_auth(key_path))
 
-        # If nothing was discovered, prompt for password now
+        # Try keyboard-interactive (Duo, 2FA challenges) — matches OpenSSH
+        # discovery order: publickey → keyboard-interactive → password
+        if not batch_mode:
+            auth_configs.append(
+                create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
+            )
+
+        # If nothing was discovered at all, prompt for password now
         if not auth_configs:
             if batch_mode:
                 print(
@@ -979,9 +986,6 @@ async def run_command(args: argparse.Namespace) -> int:
             password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
             secrets_to_eradicate.append(password)
             auth_configs.append(create_password_auth(password))
-            auth_configs.append(
-                create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
-            )
 
     # Set up event collection if --events
     event_collector = EventCollector() if args.events else None
@@ -1312,15 +1316,14 @@ async def run_command(args: argparse.Namespace) -> int:
                     await control_master_server.stop()
 
     except Exception as e:
-        # If auto-discovered auth failed and we haven't tried password yet,
-        # prompt for password and retry (matches OpenSSH behaviour)
+        # If auto-discovered auth failed (agent/keys/kbdint all failed),
+        # prompt for password as last resort (matches OpenSSH behaviour)
         from nbs_ssh.errors import AuthenticationError
         if auto_discovered and not batch_mode and isinstance(e, AuthenticationError):
             password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
             secrets_to_eradicate.append(password)
             password_configs = [
                 create_password_auth(password),
-                create_keyboard_interactive_auth(response_callback=cli_kbdint_callback),
             ]
             try:
                 async with SSHConnection(
