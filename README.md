@@ -29,7 +29,7 @@ This installs the `nbs-ssh` command into your Python environment's `bin/` (or `S
 
 ### Using pipx (recommended for CLI use)
 
-[pipx](https://pipx.pypa.io/) installs the tool in an isolated environment and puts `nbs-ssh` on your PATH automatically.
+[pipx](https://pipx.pypa.io/) installs the tool in an isolated environment and adds `nbs-ssh` to your PATH.
 
 **Linux (Debian/Ubuntu):**
 ```bash
@@ -47,7 +47,11 @@ pipx install git+https://github.com/SonicField/nbs-ssh.git
 ```powershell
 winget install Python.Python.3.12
 py -m pip install pipx
-py -m pipx install git+https://github.com/SonicField/nbs-ssh.git
+py -m pipx ensurepath
+```
+Restart your terminal, then:
+```powershell
+pipx install git+https://github.com/SonicField/nbs-ssh.git
 ```
 
 ### Optional Extras
