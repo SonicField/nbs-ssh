@@ -623,8 +623,29 @@ class SSHConnection:
         # Track auth timing
         self._timing.auth_start_ms = time.time() * 1000
 
-        for auth_config in self._auth_configs:
+        for i, auth_config in enumerate(self._auth_configs):
             auth_start_ms = time.time() * 1000
+
+            # ProxyCommand: restart the proxy for each attempt after the first.
+            # asyncssh.connect() consumes the socket — after an auth failure the
+            # SSH connection closes, taking the socket with it.  Subsequent
+            # attempts need a fresh socket (and thus a fresh proxy process).
+            if self._proxy_command is not None and i > 0:
+                if self._proxy_process is not None:
+                    await self._proxy_process.close()
+                try:
+                    self._proxy_process = ProxyCommandProcess(self._proxy_command)
+                    await self._proxy_process.start()
+                except ProxyCommandError as e:
+                    self._emitter.emit(
+                        EventType.ERROR,
+                        error_type="proxy_command_failed",
+                        message=str(e),
+                        command=e.command,
+                        exit_code=e.exit_code,
+                        **connect_data,
+                    )
+                    raise SSHConnectionError(str(e), context=error_ctx) from e
 
             try:
                 await self._try_auth_method(auth_config)
