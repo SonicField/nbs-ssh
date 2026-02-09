@@ -665,7 +665,13 @@ class SSHConnection:
                 )
                 break
 
-            except (AuthenticationError, KeyLoadError, asyncssh.PermissionDenied) as e:
+            except (
+                AuthenticationError,
+                KeyLoadError,
+                asyncssh.PermissionDenied,
+                asyncssh.DisconnectError,
+                asyncssh.ConnectionLost,
+            ) as e:
                 auth_duration_ms = (time.time() * 1000) - auth_start_ms
                 last_error = e
 
@@ -794,7 +800,11 @@ class SSHConnection:
             kbdint_config = auth_config
             options["client_keys"] = []
             options["password"] = None
-            options["preferred_auth"] = ["keyboard-interactive"]
+            # Do NOT set preferred_auth — let asyncssh negotiate with the
+            # server.  Some servers (e.g. Meta Duo 2FA) require the client
+            # to attempt publickey before offering keyboard-interactive.
+            # asyncssh's default order (publickey → kbdint → password)
+            # matches OpenSSH behaviour.
 
         elif auth_config.method == AuthMethod.PASSWORD:
             if auth_config.password is not None:
