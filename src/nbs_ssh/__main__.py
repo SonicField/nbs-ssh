@@ -621,7 +621,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="%(prog)s 0.1.0",
+        version="%(prog)s 0.1.3",
     )
 
     # SSH config file options
@@ -1314,8 +1314,8 @@ async def run_command(args: argparse.Namespace) -> int:
     except Exception as e:
         # If auto-discovered auth failed and we haven't tried password yet,
         # prompt for password and retry (matches OpenSSH behaviour)
-        from nbs_ssh.errors import AuthFailed
-        if auto_discovered and not batch_mode and isinstance(e, AuthFailed):
+        from nbs_ssh.errors import AuthenticationError
+        if auto_discovered and not batch_mode and isinstance(e, AuthenticationError):
             password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
             secrets_to_eradicate.append(password)
             password_configs = [
