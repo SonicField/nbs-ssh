@@ -58,6 +58,8 @@ pip install "nbs-ssh[pkcs11] @ git+https://github.com/SonicField/nbs-ssh.git"  #
 pip install "nbs-ssh[all] @ git+https://github.com/SonicField/nbs-ssh.git"     # Everything
 ```
 
+On Windows, replace `pip` with `py -m pip`.
+
 ## CLI Usage
 
 ```bash
