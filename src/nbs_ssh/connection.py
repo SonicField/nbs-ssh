@@ -15,12 +15,14 @@ import asyncio
 import os
 import signal
 import sys
-import termios
 import time
-import tty
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Sequence
+
+if sys.platform != "win32":
+    import termios
+    import tty
 
 import asyncssh
 
@@ -1060,6 +1062,9 @@ class SSHConnection:
         # Check if stdin is a TTY - if not, we can't do interactive mode
         if not sys.stdin.isatty():
             raise RuntimeError("Interactive shell requires a TTY (stdin is not a terminal)")
+
+        if sys.platform == "win32":
+            raise RuntimeError("Interactive shell is not supported on Windows (no termios)")
 
         # Get current terminal size
         try:
