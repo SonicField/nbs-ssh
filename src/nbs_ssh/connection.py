@@ -1551,6 +1551,7 @@ class _CombinedSSHClient(asyncssh.SSHClient):
         # If no verifier, accept all (INSECURE mode or no policy set)
         if self._verifier is None:
             self._result = HostKeyResult.TRUSTED
+            log.debug("Host key accepted (no verifier)")
             return True
 
         # Use stored host/port if provided, otherwise use callback args
@@ -1610,7 +1611,9 @@ class _CombinedSSHClient(asyncssh.SSHClient):
     def kbdint_auth_requested(self) -> str | None:
         """Called when server requests keyboard-interactive auth."""
         if self._auth_config is None:
+            log.debug("kbdint_auth_requested: no auth_config, declining")
             return None
+        log.info("kbdint_auth_requested: accepting keyboard-interactive")
         return ""
 
     def kbdint_challenge_received(
@@ -1621,13 +1624,23 @@ class _CombinedSSHClient(asyncssh.SSHClient):
         prompts: list[tuple[str, bool]],
     ) -> list[str] | None:
         """Called when server sends a keyboard-interactive challenge."""
+        log.info(
+            "kbdint_challenge_received: name=%r, instructions=%r, "
+            "%d prompt(s), lang=%r",
+            name, instructions[:80] if instructions else "", len(prompts), lang,
+        )
+        for i, (prompt_text, echo) in enumerate(prompts):
+            log.debug("  prompt[%d]: %r (echo=%s)", i, prompt_text, echo)
+
         if self._auth_config is None:
+            log.debug("kbdint_challenge_received: no auth_config, cancelling")
             return None
 
         self._challenge_count += 1
 
         # If callback is provided, use it
         if self._auth_config.kbdint_response_callback is not None:
+            log.debug("kbdint_challenge_received: invoking response callback")
             return self._auth_config.kbdint_response_callback(
                 name, instructions, prompts
             )
@@ -1638,6 +1651,7 @@ class _CombinedSSHClient(asyncssh.SSHClient):
             return [password_str] * len(prompts)
 
         # No way to respond - cancel auth
+        log.debug("kbdint_challenge_received: no callback or password, cancelling")
         return None
 
 
