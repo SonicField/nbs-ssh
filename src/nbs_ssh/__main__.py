@@ -965,22 +965,24 @@ async def run_command(args: argparse.Namespace) -> int:
                 if key_path.exists() and os.access(key_path, os.R_OK):
                     auth_configs.append(create_key_auth(key_path))
 
-        # If still nothing, fall back to password (with keyboard-interactive as backup)
-        if not auth_configs:
-            if batch_mode:
-                print(
-                    "Error: No authentication methods available and BatchMode=yes. "
-                    "Cannot prompt for password in batch mode.",
-                    file=sys.stderr,
-                )
-                return 1
+        # Always add password + keyboard-interactive as last-resort fallback.
+        # OpenSSH does this too: even when keys/agent are available, password
+        # is offered if all other methods fail.
+        if not batch_mode:
             password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
             secrets_to_eradicate.append(password)
             auth_configs.append(create_password_auth(password))
-            # Also add keyboard-interactive for 2FA scenarios
             auth_configs.append(
                 create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
             )
+        elif not auth_configs:
+            # Batch mode with no auth methods at all — can't prompt
+            print(
+                "Error: No authentication methods available and BatchMode=yes. "
+                "Cannot prompt for password in batch mode.",
+                file=sys.stderr,
+            )
+            return 1
 
     # Set up event collection if --events
     event_collector = EventCollector() if args.events else None

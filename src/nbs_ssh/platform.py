@@ -243,6 +243,9 @@ def get_default_key_paths() -> list[Path]:
        - id_ecdsa
        - id_dsa (deprecated)
 
+    Files ending in .pub are excluded — those are public keys or
+    certificates, not private keys.
+
     Returns:
         List of paths to check for private keys (config paths first)
     """
@@ -251,7 +254,7 @@ def get_default_key_paths() -> list[Path]:
 
     # First: paths from SSH config files
     for path in get_config_identity_files():
-        if path not in seen:
+        if path not in seen and not str(path).endswith(".pub"):
             paths.append(path)
             seen.add(path)
 
