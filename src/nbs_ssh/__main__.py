@@ -882,6 +882,7 @@ async def run_command(args: argparse.Namespace) -> int:
 
     # Build auth config
     auth_configs = []
+    explicit_auth = False  # True when user explicitly chose an auth method
 
     # CLI identity file takes priority
     if args.identity:
@@ -890,9 +891,15 @@ async def run_command(args: argparse.Namespace) -> int:
             print(f"Error: Key file not found: {key_path}", file=sys.stderr)
             return 1
         auth_configs.append(create_key_auth(key_path))
+        explicit_auth = True
     elif host_config.identity_file:
         # Use identity files from config if no CLI identity specified
+        # Skip .pub files — they are public keys or certificates, not private keys.
+        # OpenSSH uses IdentityFile to locate the private key and infers
+        # the .pub / -cert.pub paths from it.
         for key_path in host_config.identity_file:
+            if str(key_path).endswith(".pub"):
+                continue
             if key_path.exists() and os.access(key_path, os.R_OK):
                 auth_configs.append(create_key_auth(key_path))
 
@@ -907,6 +914,7 @@ async def run_command(args: argparse.Namespace) -> int:
         password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
         secrets_to_eradicate.append(password)
         auth_configs.append(create_password_auth(password))
+        explicit_auth = True
 
     if getattr(args, 'keyboard_interactive', False):
         if batch_mode:
@@ -919,6 +927,7 @@ async def run_command(args: argparse.Namespace) -> int:
         auth_configs.append(
             create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
         )
+        explicit_auth = True
 
     if getattr(args, 'pkcs11_provider', None):
         # PKCS#11 smart card/hardware token authentication
@@ -950,8 +959,9 @@ async def run_command(args: argparse.Namespace) -> int:
             )
         )
 
-    # If no explicit auth, try GSSAPI, agent, default keys, kbdint, lazy password
-    if not auth_configs:
+    # Auto-discover remaining auth methods unless user explicitly chose
+    # (Config identity files are NOT explicit — they augment discovery)
+    if not explicit_auth:
         # Try GSSAPI/Kerberos first (if available)
         if check_gssapi_available():
             auth_configs.append(create_gssapi_auth())
