@@ -1,6 +1,6 @@
 """nbs-ssh: AI-inspectable SSH client library."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from nbs_ssh.auth import (
     AuthConfig,
@@ -13,6 +13,7 @@ from nbs_ssh.auth import (
     create_gssapi_auth,
     create_key_auth,
     create_keyboard_interactive_auth,
+    create_lazy_password_auth,
     create_password_auth,
     create_pkcs11_auth,
     create_security_key_auth,
@@ -122,6 +123,7 @@ __all__ = [
     "AuthConfig",
     "AuthMethod",
     "create_password_auth",
+    "create_lazy_password_auth",
     "create_key_auth",
     "create_cert_auth",
     "create_agent_auth",

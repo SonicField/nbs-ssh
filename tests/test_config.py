@@ -716,3 +716,300 @@ class TestConvenienceFunctions:
         # Should be able to lookup hosts
         host_config = config.lookup("example.com")
         assert isinstance(host_config, SSHHostConfig)
+
+
+# ---------------------------------------------------------------------------
+# Include Directive Tests
+# ---------------------------------------------------------------------------
+
+class TestIncludeDirective:
+    """Test SSH config Include directive support."""
+
+    def test_include_loads_subconfig(self, tmp_path: Path) -> None:
+        """Include directive loads files from sub-config."""
+        # Create sub-config
+        config_d = tmp_path / "config.d"
+        config_d.mkdir()
+        sub_config = config_d / "devgpu.conf"
+        sub_config.write_text("""
+Host devgpu*
+    ProxyJump bastion.example.com
+    User developer
+""")
+
+        # Create main config with Include
+        main_config = tmp_path / "config"
+        main_config.write_text(f"""
+Include {config_d}/*
+
+Host *
+    ConnectTimeout 30
+""")
+
+        ssh_config = SSHConfig(config_files=[main_config])
+        host_config = ssh_config.lookup("devgpu009")
+
+        assert host_config.proxy_jump == "bastion.example.com"
+        assert host_config.user == "developer"
+        assert host_config.connect_timeout == 30
+
+    def test_include_glob_pattern(self, tmp_path: Path) -> None:
+        """Include with glob pattern loads multiple files."""
+        config_d = tmp_path / "config.d"
+        config_d.mkdir()
+
+        (config_d / "a.conf").write_text("""
+Host server-a
+    User usera
+""")
+        (config_d / "b.conf").write_text("""
+Host server-b
+    User userb
+""")
+
+        main_config = tmp_path / "config"
+        main_config.write_text(f"""
+Include {config_d}/*.conf
+""")
+
+        ssh_config = SSHConfig(config_files=[main_config])
+
+        assert ssh_config.lookup("server-a").user == "usera"
+        assert ssh_config.lookup("server-b").user == "userb"
+
+    def test_include_tilde_expansion(self, tmp_path: Path) -> None:
+        """Include expands ~ to home directory."""
+        # This test verifies the expansion happens without error.
+        # We can't easily test with actual ~ without mocking.
+        main_config = tmp_path / "config"
+        # Include a non-existent path - should not error
+        main_config.write_text("""
+Include ~/.ssh/config.d/*
+""")
+
+        # Should not raise
+        ssh_config = SSHConfig(config_files=[main_config])
+        host_config = ssh_config.lookup("example.com")
+        assert host_config is not None
+
+    def test_include_nonexistent_path(self, tmp_path: Path) -> None:
+        """Include with non-existent path is silently skipped."""
+        main_config = tmp_path / "config"
+        main_config.write_text(f"""
+Include {tmp_path}/nonexistent/*
+
+Host test
+    User testuser
+""")
+
+        ssh_config = SSHConfig(config_files=[main_config])
+        assert ssh_config.lookup("test").user == "testuser"
+
+    def test_include_position_dependent(self, tmp_path: Path) -> None:
+        """Include is position-dependent (first match wins)."""
+        config_d = tmp_path / "config.d"
+        config_d.mkdir()
+        (config_d / "first.conf").write_text("""
+Host myhost
+    User firstuser
+""")
+
+        main_config = tmp_path / "config"
+        main_config.write_text(f"""
+Include {config_d}/*
+
+Host myhost
+    User seconduser
+""")
+
+        ssh_config = SSHConfig(config_files=[main_config])
+        # First match wins - included file comes first
+        assert ssh_config.lookup("myhost").user == "firstuser"
+
+
+# ---------------------------------------------------------------------------
+# Match Host Block Tests
+# ---------------------------------------------------------------------------
+
+class TestMatchHostBlocks:
+    """Test SSH config Match host block support."""
+
+    def test_match_host_pattern(self, tmp_path: Path) -> None:
+        """Match host applies options based on resolved hostname."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Host devgpu009
+    HostName devgpu009.ncg6.facebook.com
+
+Match host *.facebook.com
+    User specialuser
+    ProxyJump bastion.facebook.com
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        host_config = ssh_config.lookup("devgpu009")
+
+        assert host_config.hostname == "devgpu009.ncg6.facebook.com"
+        assert host_config.user == "specialuser"
+        assert host_config.proxy_jump == "bastion.facebook.com"
+
+    def test_match_host_wildcard(self, tmp_path: Path) -> None:
+        """Match host with wildcard pattern."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Match host *.example.com
+    User matchuser
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+
+        assert ssh_config.lookup("server.example.com").user == "matchuser"
+        assert ssh_config.lookup("other.org").user is None
+
+    def test_match_all(self, tmp_path: Path) -> None:
+        """Match all applies to all hosts."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Match all
+    ConnectTimeout 60
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+
+        assert ssh_config.lookup("anything.com").connect_timeout == 60
+        assert ssh_config.lookup("other.org").connect_timeout == 60
+
+    def test_match_host_after_hostname_resolution(self, tmp_path: Path) -> None:
+        """Match host evaluates against resolved hostname (post-HostName)."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Host myalias
+    HostName real.server.facebook.com
+
+Match host *.facebook.com
+    ProxyJump bastion
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        host_config = ssh_config.lookup("myalias")
+
+        # Match should work against resolved hostname
+        assert host_config.proxy_jump == "bastion"
+
+    def test_unsupported_match_criteria_skipped(self, tmp_path: Path) -> None:
+        """Unsupported Match criteria are silently skipped."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Match user *
+    Port 2222
+
+Host test
+    User testuser
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        host_config = ssh_config.lookup("test")
+
+        # Match user should be skipped (unsupported)
+        assert host_config.port is None
+        assert host_config.user == "testuser"
+
+    def test_host_block_wins_over_match_for_first_set(self, tmp_path: Path) -> None:
+        """Host block options (set first) take precedence over Match block."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Host myserver
+    User hostuser
+
+Match host myserver
+    User matchuser
+    Port 2222
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        host_config = ssh_config.lookup("myserver")
+
+        # First match wins: Host block set User first
+        assert host_config.user == "hostuser"
+        # Match block can still add new options
+        assert host_config.port == 2222
+
+    def test_match_host_comma_separated_patterns(self, tmp_path: Path) -> None:
+        """Match host with comma-separated patterns (OpenSSH format)."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Match host *.facebook.com,*.thefacebook.com,*.fbinfra.net,dev,dev*
+    ProxyCommand x2ssh -fallback -tunnel %h
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+
+        # Should match *.facebook.com
+        cfg = ssh_config.lookup("devgpu009.ncg6.facebook.com")
+        assert cfg.proxy_command is not None
+        assert "x2ssh" in cfg.proxy_command
+
+        # Should match *.fbinfra.net
+        cfg2 = ssh_config.lookup("server.fbinfra.net")
+        assert cfg2.proxy_command is not None
+
+        # Should match dev*
+        cfg3 = ssh_config.lookup("devserver")
+        assert cfg3.proxy_command is not None
+
+        # Should NOT match
+        cfg4 = ssh_config.lookup("other.example.com")
+        assert cfg4.proxy_command is None
+
+    def test_match_host_negated_comma_patterns(self, tmp_path: Path) -> None:
+        """Match host with negated patterns in comma-separated list."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Match host !*.thefacebook.com,*-arvrusr*,*-fbuser*
+    Port 2222
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+
+        # Should match *-arvrusr* but not *.thefacebook.com
+        cfg = ssh_config.lookup("host-arvrusr-01")
+        assert cfg.port == 2222
+
+        # Should NOT match — matches negated pattern
+        cfg2 = ssh_config.lookup("host-arvrusr-01.thefacebook.com")
+        assert cfg2.port is None
+
+        # Should NOT match — no positive pattern matches
+        cfg3 = ssh_config.lookup("devgpu009.facebook.com")
+        assert cfg3.port is None
+
+    def test_match_host_real_world_meta_config(self, tmp_path: Path) -> None:
+        """Test against real-world Meta /etc/ssh/ssh_config structure."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Match host !*.thefacebook.com,*-arvrusr*,*-fbuser*
+    Port 2222
+
+Match host *.od,*.sb
+    ConnectTimeout 10
+
+Match host *.facebook.com,*.thefacebook.com,*.fbinfra.net,dev,dev*
+    ProxyCommand x2ssh -fallback -tunnel %h
+
+Match all
+    ConnectTimeout 30
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+
+        # devgpu009.ncg6.facebook.com should get ProxyCommand from line 42
+        cfg = ssh_config.lookup("devgpu009.ncg6.facebook.com")
+        assert cfg.proxy_command is not None
+        assert "x2ssh" in cfg.proxy_command
+        assert "devgpu009.ncg6.facebook.com" in cfg.proxy_command
+        # Should also get ConnectTimeout from Match all
+        assert cfg.connect_timeout == 30
+
+        # An fbinfra.net host should also get the proxy
+        cfg2 = ssh_config.lookup("server.od.fbinfra.net")
+        assert cfg2.proxy_command is not None

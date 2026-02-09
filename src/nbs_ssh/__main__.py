@@ -621,7 +621,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="%(prog)s 0.1.4",
+        version="%(prog)s 0.2.0",
     )
 
     # SSH config file options
@@ -686,6 +686,7 @@ async def run_command(args: argparse.Namespace) -> int:
         create_gssapi_auth,
         create_key_auth,
         create_keyboard_interactive_auth,
+        create_lazy_password_auth,
         create_password_auth,
         create_pkcs11_auth,
         get_agent_available,
@@ -949,10 +950,8 @@ async def run_command(args: argparse.Namespace) -> int:
             )
         )
 
-    # If no explicit auth, try GSSAPI, agent, default keys
-    auto_discovered = False
+    # If no explicit auth, try GSSAPI, agent, default keys, kbdint, lazy password
     if not auth_configs:
-        auto_discovered = True
         # Try GSSAPI/Kerberos first (if available)
         if check_gssapi_available():
             auth_configs.append(create_gssapi_auth())
@@ -974,7 +973,18 @@ async def run_command(args: argparse.Namespace) -> int:
                 create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
             )
 
-        # If nothing was discovered at all, prompt for password now
+        # Lazy password as last resort — callback only invoked if all
+        # preceding methods fail, so no eager prompting
+        if not batch_mode:
+            def _lazy_password_prompt() -> SecureString:
+                pw = SecureString(
+                    getpass.getpass(f"Password for {username}@{host}: ")
+                )
+                secrets_to_eradicate.append(pw)
+                return pw
+            auth_configs.append(create_lazy_password_auth(_lazy_password_prompt))
+
+        # If nothing was discovered at all (batch mode, no agent, no keys)
         if not auth_configs:
             if batch_mode:
                 print(
@@ -983,6 +993,7 @@ async def run_command(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
+            # This path should not be reachable — lazy password covers non-batch
             password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
             secrets_to_eradicate.append(password)
             auth_configs.append(create_password_auth(password))
@@ -1225,165 +1236,76 @@ async def run_command(args: argparse.Namespace) -> int:
                     if verbose > 0:
                         print(f"ControlMaster started at {control_socket_path}", file=sys.stderr)
 
-            # Handle -N (no command, forwarding only)
-            no_command = getattr(args, 'no_command', False)
-            if no_command:
-                # Just keep connection alive for forwarding
-                if verbose > 0:
-                    print(
-                        f"Forwarding mode active. Press Ctrl+C to exit.",
-                        file=sys.stderr,
-                    )
-                # Set up signal handler for clean exit
-                stop_event = asyncio.Event()
+            try:
+                # Handle -N (no command, forwarding only)
+                if getattr(args, 'no_command', False):
+                    # Just keep connection alive for forwarding
+                    if verbose > 0:
+                        print(
+                            f"Forwarding mode active. Press Ctrl+C to exit.",
+                            file=sys.stderr,
+                        )
+                    # Set up signal handler for clean exit
+                    stop_event = asyncio.Event()
 
-                def signal_handler():
-                    stop_event.set()
+                    def signal_handler():
+                        stop_event.set()
 
-                loop = asyncio.get_event_loop()
-                for sig in (signal.SIGINT, signal.SIGTERM):
+                    loop = asyncio.get_event_loop()
+                    for sig in (signal.SIGINT, signal.SIGTERM):
+                        try:
+                            loop.add_signal_handler(sig, signal_handler)
+                        except NotImplementedError:
+                            # Windows doesn't support add_signal_handler
+                            pass
+
                     try:
-                        loop.add_signal_handler(sig, signal_handler)
-                    except NotImplementedError:
-                        # Windows doesn't support add_signal_handler
+                        await stop_event.wait()
+                    except asyncio.CancelledError:
                         pass
-
-                try:
-                    await stop_event.wait()
-                except asyncio.CancelledError:
-                    pass
-                finally:
-                    # Close all forwards
-                    for handle in forward_handles:
-                        await handle.close()
-
-                    # Stop control master if running
-                    if control_master_server:
-                        await control_master_server.stop()
-                exit_code = 0
-            elif args.command:
-                # Determine terminal type based on -t/-T flags
-                force_tty = getattr(args, 'force_tty', False)
-                disable_tty = getattr(args, 'disable_tty', False)
-
-                if force_tty:
-                    # -t: Force PTY allocation
-                    term_type = os.environ.get("TERM", "xterm-256color")
-                elif disable_tty:
-                    # -T: Explicitly disable PTY
-                    term_type = None
-                else:
-                    # Default: no PTY for command execution
-                    term_type = None
-
-                # Pass environment variables if SendEnv/SetEnv configured
-                exec_env = env_to_send if env_to_send else None
-                result = await conn.exec(args.command, term_type=term_type, env=exec_env)
-
-                # Output stdout to stdout, stderr to stderr
-                if result.stdout:
-                    sys.stdout.write(result.stdout)
-                if result.stderr:
-                    sys.stderr.write(result.stderr)
-
-                exit_code = result.exit_code
-
-                # Close all forwards
-                for handle in forward_handles:
-                    await handle.close()
-
-                # Stop control master if running
-                if control_master_server:
-                    await control_master_server.stop()
-            else:
-                # No command - open interactive shell
-                # Get escape character from args
-                escape_char = getattr(args, 'escape_char', '~')
-                try:
-                    exit_code = await conn.shell(escape_char=escape_char)
-                except RuntimeError as e:
-                    # Not a TTY - just connect and print message
-                    print(f"Connected to {username}@{host}:{args.port}", file=sys.stderr)
-                    print(f"(Interactive shell not available: {e})", file=sys.stderr)
                     exit_code = 0
+                elif args.command:
+                    # Determine terminal type based on -t/-T flags
+                    if getattr(args, 'force_tty', False):
+                        # -t: Force PTY allocation
+                        term_type = os.environ.get("TERM", "xterm-256color")
+                    elif getattr(args, 'disable_tty', False):
+                        # -T: Explicitly disable PTY
+                        term_type = None
+                    else:
+                        # Default: no PTY for command execution
+                        term_type = None
 
-                # Close all forwards
+                    # Pass environment variables if SendEnv/SetEnv configured
+                    exec_env = env_to_send if env_to_send else None
+                    result = await conn.exec(args.command, term_type=term_type, env=exec_env)
+
+                    # Output stdout to stdout, stderr to stderr
+                    if result.stdout:
+                        sys.stdout.write(result.stdout)
+                    if result.stderr:
+                        sys.stderr.write(result.stderr)
+
+                    exit_code = result.exit_code
+                else:
+                    # No command - open interactive shell
+                    try:
+                        exit_code = await conn.shell(escape_char=getattr(args, 'escape_char', '~'))
+                    except RuntimeError as e:
+                        # Not a TTY - just connect and print message
+                        print(f"Connected to {username}@{host}:{port}", file=sys.stderr)
+                        print(f"(Interactive shell not available: {e})", file=sys.stderr)
+                        exit_code = 0
+            finally:
+                # Consolidated cleanup: close all forwards and stop control master
                 for handle in forward_handles:
                     await handle.close()
-
-                # Stop control master if running
                 if control_master_server:
                     await control_master_server.stop()
 
     except Exception as e:
-        # If auto-discovered auth failed (agent/keys/kbdint all failed),
-        # prompt for password as last resort (matches OpenSSH behaviour)
-        from nbs_ssh.errors import AuthenticationError
-        if auto_discovered and not batch_mode and isinstance(e, AuthenticationError):
-            password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
-            secrets_to_eradicate.append(password)
-            password_configs = [
-                create_password_auth(password),
-            ]
-            try:
-                async with SSHConnection(
-                    host=host,
-                    port=port,
-                    username=username,
-                    auth=password_configs,
-                    host_key_policy=host_key_policy,
-                    on_unknown_host_key=on_unknown_host_key,
-                    event_collector=event_collector,
-                    connect_timeout=timeout,
-                    proxy_jump=proxy_jump,
-                    proxy_command=proxy_command,
-                    agent_forwarding=forward_agent,
-                    x11_forwarding=getattr(args, 'forward_x11', False) or getattr(args, 'forward_x11_trusted', False),
-                    compression=getattr(args, 'compress', False),
-                    hash_known_hosts=hash_known_hosts,
-                ) as conn:
-                    # Re-run the session logic with the password connection
-                    no_command = getattr(args, 'no_command', False)
-                    if no_command:
-                        stop_event = asyncio.Event()
-                        def signal_handler():
-                            stop_event.set()
-                        loop = asyncio.get_event_loop()
-                        for sig in (signal.SIGINT, signal.SIGTERM):
-                            try:
-                                loop.add_signal_handler(sig, signal_handler)
-                            except NotImplementedError:
-                                pass
-                        try:
-                            await stop_event.wait()
-                        except asyncio.CancelledError:
-                            pass
-                        exit_code = 0
-                    elif args.command:
-                        force_tty = getattr(args, 'force_tty', False)
-                        disable_tty = getattr(args, 'disable_tty', False)
-                        term_type = os.environ.get("TERM", "xterm-256color") if force_tty else (None if disable_tty else None)
-                        exec_env = env_to_send if env_to_send else None
-                        result = await conn.exec(args.command, term_type=term_type, env=exec_env)
-                        if result.stdout:
-                            sys.stdout.write(result.stdout)
-                        if result.stderr:
-                            sys.stderr.write(result.stderr)
-                        exit_code = result.exit_code
-                    else:
-                        escape_char = getattr(args, 'escape_char', '~')
-                        try:
-                            exit_code = await conn.shell(escape_char=escape_char)
-                        except RuntimeError as shell_e:
-                            print(f"Connected to {username}@{host}:{args.port}", file=sys.stderr)
-                            print(f"(Interactive shell not available: {shell_e})", file=sys.stderr)
-                            exit_code = 0
-            except Exception as retry_e:
-                print(f"Error: {retry_e}", file=sys.stderr)
-                exit_code = 1
-        else:
-            print(f"Error: {e}", file=sys.stderr)
-            exit_code = 1
+        print(f"Error: {e}", file=sys.stderr)
+        exit_code = 1
 
     finally:
         # Eradicate all secrets (passwords, PINs) from memory

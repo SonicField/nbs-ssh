@@ -127,6 +127,9 @@ class AuthConfig:
     pkcs11_token_serial: str | bytes | None = None  # Optional token serial filter
     pkcs11_key_label: str | None = None  # Optional key label filter
     pkcs11_key_id: str | bytes | None = None  # Optional key ID filter
+    # Lazy password callback: called only when password is actually needed
+    # This avoids prompting for a password when earlier auth methods succeed
+    password_callback: Callable[[], str | SecureString] | None = None
     # Certificate authentication (pairs with key_path for PRIVATE_KEY method)
     certificate_path: Path | str | None = None  # Path to SSH certificate file
     # FIDO2/U2F security key options
@@ -138,8 +141,8 @@ class AuthConfig:
     def __post_init__(self) -> None:
         """Validate configuration."""
         if self.method == AuthMethod.PASSWORD:
-            assert self.password is not None, \
-                "Password required for PASSWORD auth method"
+            assert self.password is not None or self.password_callback is not None, \
+                "Password or password_callback required for PASSWORD auth method"
 
         if self.method == AuthMethod.PRIVATE_KEY:
             assert self.key_path is not None, \
@@ -368,6 +371,32 @@ async def get_agent_keys() -> list[asyncssh.SSHKey]:
 def create_password_auth(password: str) -> AuthConfig:
     """Create password authentication config."""
     return AuthConfig(method=AuthMethod.PASSWORD, password=password)
+
+
+def create_lazy_password_auth(
+    callback: Callable[[], str | SecureString],
+) -> AuthConfig:
+    """
+    Create lazy password authentication config.
+
+    The callback is only invoked when password auth is actually attempted,
+    avoiding unnecessary prompting when earlier auth methods (agent, keys,
+    keyboard-interactive) succeed.
+
+    Args:
+        callback: Callable that returns a password (str or SecureString)
+                  when invoked. Called at most once, only if password
+                  auth is actually attempted.
+
+    Returns:
+        AuthConfig for lazy password authentication
+
+    Example:
+        config = create_lazy_password_auth(
+            lambda: SecureString(getpass.getpass("Password: "))
+        )
+    """
+    return AuthConfig(method=AuthMethod.PASSWORD, password_callback=callback)
 
 
 def create_key_auth(

@@ -28,6 +28,7 @@ from nbs_ssh.auth import (
     check_security_key_available,
     create_agent_auth,
     create_key_auth,
+    create_lazy_password_auth,
     create_password_auth,
     create_security_key_auth,
     load_private_key,
@@ -144,8 +145,8 @@ class TestAuthConfig:
     """Test AuthConfig validation and creation."""
 
     def test_password_auth_requires_password(self) -> None:
-        """PASSWORD method requires password to be set."""
-        with pytest.raises(AssertionError, match="Password required"):
+        """PASSWORD method requires password or callback to be set."""
+        with pytest.raises(AssertionError, match="Password or password_callback required"):
             AuthConfig(method=AuthMethod.PASSWORD)
 
     def test_password_auth_creation(self) -> None:
@@ -892,4 +893,194 @@ class TestSecurityKeyDocumentation:
         assert "resident" in doc
         assert "pin" in doc
         assert "key_path" in doc
+
+
+# ---------------------------------------------------------------------------
+# Lazy Password Auth Tests
+# ---------------------------------------------------------------------------
+
+class TestLazyPasswordAuth:
+    """Test lazy password authentication (password_callback)."""
+
+    def test_lazy_password_accepts_callback_without_password(self) -> None:
+        """PASSWORD method accepts password_callback instead of password."""
+        config = AuthConfig(
+            method=AuthMethod.PASSWORD,
+            password_callback=lambda: "lazy_password",
+        )
+
+        assert config.method == AuthMethod.PASSWORD
+        assert config.password is None
+        assert config.password_callback is not None
+
+    def test_lazy_password_rejects_neither(self) -> None:
+        """PASSWORD method rejects neither password nor callback."""
+        with pytest.raises(AssertionError, match="Password or password_callback"):
+            AuthConfig(method=AuthMethod.PASSWORD)
+
+    def test_lazy_password_accepts_both(self) -> None:
+        """PASSWORD method accepts both password and callback (password takes precedence)."""
+        config = AuthConfig(
+            method=AuthMethod.PASSWORD,
+            password="direct_password",
+            password_callback=lambda: "lazy_password",
+        )
+
+        assert config.password == "direct_password"
+        assert config.password_callback is not None
+
+    def test_create_lazy_password_auth_factory(self) -> None:
+        """create_lazy_password_auth creates correct config."""
+        callback = lambda: "test_password"
+        config = create_lazy_password_auth(callback)
+
+        assert config.method == AuthMethod.PASSWORD
+        assert config.password is None
+        assert config.password_callback is callback
+
+    def test_lazy_password_callback_not_called_at_creation(self) -> None:
+        """Callback is not called during AuthConfig creation."""
+        call_count = 0
+
+        def counting_callback() -> str:
+            nonlocal call_count
+            call_count += 1
+            return "password"
+
+        config = create_lazy_password_auth(counting_callback)
+
+        assert call_count == 0, "Callback should not be called during creation"
+
+    def test_lazy_password_to_dict_excludes_callback(self) -> None:
+        """to_dict() does not expose password_callback."""
+        config = create_lazy_password_auth(lambda: "secret")
+
+        data = config.to_dict()
+        assert "password_callback" not in data
+        assert "password" not in data
+        assert data["method"] == "password"
+
+    def test_lazy_password_exported_from_package(self) -> None:
+        """create_lazy_password_auth is exported from nbs_ssh."""
+        import nbs_ssh
+
+        assert hasattr(nbs_ssh, "create_lazy_password_auth")
+
+
+class TestLazyPasswordConnectionIntegration:
+    """Test lazy password integration with SSHConnection."""
+
+    @pytest.mark.asyncio
+    async def test_lazy_password_callback_invoked_on_auth(self) -> None:
+        """Lazy password callback is invoked when password auth is attempted."""
+        import asyncssh
+        import tempfile
+
+        from nbs_ssh.connection import SSHConnection
+        from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+        call_count = 0
+
+        def password_callback() -> str:
+            nonlocal call_count
+            call_count += 1
+            return "test"
+
+        config = MockServerConfig(
+            username="test",
+            password="test",
+        )
+
+        async with MockSSHServer(config) as server:
+            lazy_auth = create_lazy_password_auth(password_callback)
+            async with SSHConnection(
+                host="localhost",
+                port=server.port,
+                username="test",
+                auth=lazy_auth,
+                known_hosts=None,
+            ) as conn:
+                result = await conn.exec("echo hello")
+                assert result.exit_code == 0
+
+        assert call_count == 1, "Callback should be called exactly once"
+
+    @pytest.mark.asyncio
+    async def test_lazy_password_not_called_when_earlier_auth_succeeds(self) -> None:
+        """Lazy password callback is NOT called when an earlier auth method succeeds."""
+        import asyncssh
+        import tempfile
+
+        from nbs_ssh.connection import SSHConnection
+        from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+        call_count = 0
+
+        def password_callback() -> str:
+            nonlocal call_count
+            call_count += 1
+            return "wrong_password_anyway"
+
+        # Generate a test keypair
+        private_key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
+        public_key = private_key.export_public_key().decode("utf-8")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            key_path = Path(tmpdir) / "id_rsa"
+            key_path.write_bytes(private_key.export_private_key())
+            key_path.chmod(0o600)
+
+            config = MockServerConfig(
+                username="test",
+                password="test",
+                authorized_keys=[public_key],
+            )
+
+            async with MockSSHServer(config) as server:
+                from nbs_ssh.auth import create_key_auth
+
+                # Key auth first (will succeed), then lazy password (should not be called)
+                auth_configs = [
+                    create_key_auth(key_path),
+                    create_lazy_password_auth(password_callback),
+                ]
+
+                async with SSHConnection(
+                    host="localhost",
+                    port=server.port,
+                    username="test",
+                    auth=auth_configs,
+                    known_hosts=None,
+                ) as conn:
+                    result = await conn.exec("echo hello")
+                    assert result.exit_code == 0
+
+        assert call_count == 0, "Callback should NOT be called when earlier auth succeeds"
+
+    @pytest.mark.asyncio
+    async def test_lazy_password_with_secure_string(self) -> None:
+        """Lazy password callback can return SecureString."""
+        from nbs_ssh.connection import SSHConnection
+        from nbs_ssh.secure_string import SecureString
+        from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+        def secure_callback() -> SecureString:
+            return SecureString("test")
+
+        config = MockServerConfig(
+            username="test",
+            password="test",
+        )
+
+        async with MockSSHServer(config) as server:
+            lazy_auth = create_lazy_password_auth(secure_callback)
+            async with SSHConnection(
+                host="localhost",
+                port=server.port,
+                username="test",
+                auth=lazy_auth,
+                known_hosts=None,
+            ) as conn:
+                result = await conn.exec("echo hello")
+                assert result.exit_code == 0
 

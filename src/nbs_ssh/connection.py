@@ -37,6 +37,7 @@ from nbs_ssh.auth import (
     create_gssapi_auth,
     create_key_auth,
     create_keyboard_interactive_auth,
+    create_lazy_password_auth,
     create_password_auth,
     create_pkcs11_auth,
     get_agent_keys,
@@ -775,7 +776,21 @@ class SSHConnection:
             options["preferred_auth"] = ["keyboard-interactive"]
 
         elif auth_config.method == AuthMethod.PASSWORD:
-            options["password"] = _reveal(auth_config.password)
+            if auth_config.password is not None:
+                password_value = _reveal(auth_config.password)
+            elif auth_config.password_callback is not None:
+                loop = asyncio.get_event_loop()
+                raw_password = await loop.run_in_executor(
+                    None, auth_config.password_callback
+                )
+                password_value = (
+                    raw_password.reveal()
+                    if isinstance(raw_password, SecureString)
+                    else raw_password
+                )
+            else:
+                raise AuthFailed("No password or password_callback provided")
+            options["password"] = password_value
             options["client_keys"] = []
 
         elif auth_config.method == AuthMethod.PRIVATE_KEY:

@@ -200,6 +200,17 @@ class SSHConfig:
             elif value.startswith("'") and value.endswith("'"):
                 value = value[1:-1]
 
+            # Handle Include directive
+            if option == "include":
+                # Close current block if any (Include always starts new context)
+                if current_block:
+                    self._host_blocks.append(current_block)
+                    current_block = None
+
+                # Resolve and load included files
+                self._handle_include(value, source_path)
+                continue
+
             # Handle Host and Match blocks
             if option == "host":
                 # Save previous block if any
@@ -211,14 +222,28 @@ class SSHConfig:
                 current_block = _HostBlock(patterns=patterns, options={})
 
             elif option == "match":
-                # Match blocks are more complex - for now, skip them
+                # Save previous block if any
                 if current_block:
                     self._host_blocks.append(current_block)
-                current_block = _HostBlock(
-                    patterns=[],
-                    options={},
-                    is_match=True,
-                )
+
+                # Parse Match criteria
+                match_patterns, is_host_match = self._parse_match_criteria(value)
+
+                if is_host_match:
+                    current_block = _HostBlock(
+                        patterns=match_patterns,
+                        options={},
+                        is_match=True,
+                    )
+                else:
+                    # Unsupported Match criteria — create block but it won't match
+                    import sys
+                    print(f"Warning: Unsupported Match criteria: {value}", file=sys.stderr)
+                    current_block = _HostBlock(
+                        patterns=[],
+                        options={},
+                        is_match=True,
+                    )
 
             else:
                 # Regular option
@@ -259,6 +284,61 @@ class SSHConfig:
             patterns.append("".join(current))
 
         return patterns
+
+    def _handle_include(self, pattern: str, source_path: Path | None = None) -> None:
+        """Handle Include directive by loading matching config files."""
+        import glob as glob_module
+
+        # Expand ~ to home directory
+        expanded = os.path.expanduser(pattern)
+
+        # If relative path, resolve relative to the config file's directory
+        if not os.path.isabs(expanded) and source_path is not None:
+            expanded = str(source_path.parent / expanded)
+
+        # Glob to find matching files
+        matches = sorted(glob_module.glob(expanded))
+
+        for match_path in matches:
+            path = Path(match_path)
+            if path.is_file():
+                self._load_file(path)
+
+    def _parse_match_criteria(self, value: str) -> tuple[list[str], bool]:
+        """Parse Match block criteria.
+
+        Currently supports:
+        - Match host <pattern>[,<pattern>,...] (comma-separated, per OpenSSH)
+        - Match all (matches everything)
+
+        Other criteria (user, exec, localuser, etc.) are not supported
+        and will be silently skipped with a warning.
+
+        Note: OpenSSH uses comma-separated patterns for Match host
+        (unlike Host blocks which are space-separated).
+
+        Returns:
+            Tuple of (patterns, is_host_match) where is_host_match indicates
+            whether this is a supported Match block.
+        """
+        parts = value.strip().split()
+        if not parts:
+            return [], False
+
+        keyword = parts[0].lower()
+
+        if keyword == "all":
+            return ["*"], True
+
+        if keyword == "host":
+            # Remaining parts are host patterns — comma-separated per OpenSSH
+            # e.g. "Match host *.facebook.com,*.fbinfra.net,dev*"
+            raw = " ".join(parts[1:]) if len(parts) > 1 else ""
+            patterns = [p.strip() for p in raw.split(",") if p.strip()]
+            return patterns, bool(patterns)
+
+        # Unsupported criteria
+        return [], False
 
     def _set_option(
         self,
@@ -360,8 +440,12 @@ class SSHConfig:
         """
         Look up configuration for a specific host.
 
-        Applies Host blocks in order, with first match winning
-        for single-value options.
+        Two-pass evaluation matching OpenSSH behaviour:
+        1. First pass: evaluate Host blocks against the original hostname
+        2. Second pass: evaluate Match host blocks against the resolved
+           hostname (post-HostName aliasing)
+
+        First match wins for single-value options.
 
         Args:
             host: The hostname to look up (as specified by user)
@@ -376,13 +460,30 @@ class SSHConfig:
         for key, value in self._global_options.items():
             self._set_option(merged, key, value if isinstance(value, str) else value[0])
 
-        # Apply matching Host blocks
+        # First pass: Apply matching Host blocks (skip Match blocks)
         for block in self._host_blocks:
             if block.is_match:
-                continue  # Skip Match blocks for now
+                continue
 
-            # Check if the host matches this block's patterns
             if self._matches_host_block(host, block.patterns):
+                for key, value in block.options.items():
+                    if isinstance(value, list):
+                        for v in value:
+                            self._set_option(merged, key, v)
+                    else:
+                        self._set_option(merged, key, value)
+
+        # Second pass: Apply matching Match host blocks
+        # Use resolved hostname (post-HostName aliasing)
+        resolved_host = str(merged.get("hostname", host))
+
+        for block in self._host_blocks:
+            if not block.is_match:
+                continue
+            if not block.patterns:
+                continue  # Unsupported Match criteria
+
+            if self._matches_host_block(resolved_host, block.patterns):
                 for key, value in block.options.items():
                     if isinstance(value, list):
                         for v in value:
