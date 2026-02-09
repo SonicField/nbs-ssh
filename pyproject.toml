@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nbs-ssh"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI-inspectable SSH client library and CLI — a pure-Python alternative to OpenSSH with structured JSONL diagnostics, async streaming, and full auth method support."
 readme = "README.md"
 license = {text = "MIT"}

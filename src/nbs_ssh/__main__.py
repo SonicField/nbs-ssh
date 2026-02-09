@@ -949,8 +949,10 @@ async def run_command(args: argparse.Namespace) -> int:
             )
         )
 
-    # If no explicit auth, try GSSAPI, agent, default keys, then password
+    # If no explicit auth, try GSSAPI, agent, default keys
+    auto_discovered = False
     if not auth_configs:
+        auto_discovered = True
         # Try GSSAPI/Kerberos first (if available)
         if check_gssapi_available():
             auth_configs.append(create_gssapi_auth())
@@ -965,24 +967,21 @@ async def run_command(args: argparse.Namespace) -> int:
                 if key_path.exists() and os.access(key_path, os.R_OK):
                     auth_configs.append(create_key_auth(key_path))
 
-        # Always add password + keyboard-interactive as last-resort fallback.
-        # OpenSSH does this too: even when keys/agent are available, password
-        # is offered if all other methods fail.
-        if not batch_mode:
+        # If nothing was discovered, prompt for password now
+        if not auth_configs:
+            if batch_mode:
+                print(
+                    "Error: No authentication methods available and BatchMode=yes. "
+                    "Cannot prompt for password in batch mode.",
+                    file=sys.stderr,
+                )
+                return 1
             password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
             secrets_to_eradicate.append(password)
             auth_configs.append(create_password_auth(password))
             auth_configs.append(
                 create_keyboard_interactive_auth(response_callback=cli_kbdint_callback)
             )
-        elif not auth_configs:
-            # Batch mode with no auth methods at all — can't prompt
-            print(
-                "Error: No authentication methods available and BatchMode=yes. "
-                "Cannot prompt for password in batch mode.",
-                file=sys.stderr,
-            )
-            return 1
 
     # Set up event collection if --events
     event_collector = EventCollector() if args.events else None
@@ -1313,8 +1312,75 @@ async def run_command(args: argparse.Namespace) -> int:
                     await control_master_server.stop()
 
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        exit_code = 1
+        # If auto-discovered auth failed and we haven't tried password yet,
+        # prompt for password and retry (matches OpenSSH behaviour)
+        from nbs_ssh.errors import AuthFailed
+        if auto_discovered and not batch_mode and isinstance(e, AuthFailed):
+            password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
+            secrets_to_eradicate.append(password)
+            password_configs = [
+                create_password_auth(password),
+                create_keyboard_interactive_auth(response_callback=cli_kbdint_callback),
+            ]
+            try:
+                async with SSHConnection(
+                    host=host,
+                    port=port,
+                    username=username,
+                    auth=password_configs,
+                    host_key_policy=host_key_policy,
+                    on_unknown_host_key=on_unknown_host_key,
+                    event_collector=event_collector,
+                    connect_timeout=timeout,
+                    proxy_jump=proxy_jump,
+                    proxy_command=proxy_command,
+                    agent_forwarding=forward_agent,
+                    x11_forwarding=getattr(args, 'forward_x11', False) or getattr(args, 'forward_x11_trusted', False),
+                    compression=getattr(args, 'compress', False),
+                    hash_known_hosts=hash_known_hosts,
+                ) as conn:
+                    # Re-run the session logic with the password connection
+                    no_command = getattr(args, 'no_command', False)
+                    if no_command:
+                        stop_event = asyncio.Event()
+                        def signal_handler():
+                            stop_event.set()
+                        loop = asyncio.get_event_loop()
+                        for sig in (signal.SIGINT, signal.SIGTERM):
+                            try:
+                                loop.add_signal_handler(sig, signal_handler)
+                            except NotImplementedError:
+                                pass
+                        try:
+                            await stop_event.wait()
+                        except asyncio.CancelledError:
+                            pass
+                        exit_code = 0
+                    elif args.command:
+                        force_tty = getattr(args, 'force_tty', False)
+                        disable_tty = getattr(args, 'disable_tty', False)
+                        term_type = os.environ.get("TERM", "xterm-256color") if force_tty else (None if disable_tty else None)
+                        exec_env = env_to_send if env_to_send else None
+                        result = await conn.exec(args.command, term_type=term_type, env=exec_env)
+                        if result.stdout:
+                            sys.stdout.write(result.stdout)
+                        if result.stderr:
+                            sys.stderr.write(result.stderr)
+                        exit_code = result.exit_code
+                    else:
+                        escape_char = getattr(args, 'escape_char', '~')
+                        try:
+                            exit_code = await conn.shell(escape_char=escape_char)
+                        except RuntimeError as shell_e:
+                            print(f"Connected to {username}@{host}:{args.port}", file=sys.stderr)
+                            print(f"(Interactive shell not available: {shell_e})", file=sys.stderr)
+                            exit_code = 0
+            except Exception as retry_e:
+                print(f"Error: {retry_e}", file=sys.stderr)
+                exit_code = 1
+        else:
+            print(f"Error: {e}", file=sys.stderr)
+            exit_code = 1
 
     finally:
         # Eradicate all secrets (passwords, PINs) from memory
