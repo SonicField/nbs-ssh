@@ -16,6 +16,7 @@ Certificate authentication requires:
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from nbs_ssh.errors import CertificateError
 class TestLoadCertificate:
     """Test certificate loading with error handling."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix path separators in assertions")
     def test_load_certificate_file_not_found(self) -> None:
         """load_certificate raises CertificateError for missing file."""
         with pytest.raises(CertificateError) as exc_info:
@@ -48,6 +50,7 @@ class TestLoadCertificate:
         assert "file_not_found" in error.to_dict().get("reason", "")
         assert "/nonexistent/cert/path" in error.to_dict().get("cert_path", "")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not available on Windows")
     def test_load_certificate_permission_denied(self, tmp_path: Path) -> None:
         """load_certificate raises CertificateError for unreadable file."""
         cert_file = tmp_path / "unreadable_cert"

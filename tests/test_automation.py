@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -748,6 +749,7 @@ async def test_automation_regex_capture_groups(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="Uses Unix shell commands (sleep)")
 async def test_automation_timeout_behaviour(
     streaming_ssh_server,
     event_collector,

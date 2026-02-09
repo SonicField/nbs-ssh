@@ -13,6 +13,7 @@ These are primarily unit tests that don't require Docker.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -201,6 +202,7 @@ class TestAuthConfig:
         assert "password" not in data
         assert data["method"] == "password"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix path separators in assertions")
     def test_to_dict_includes_key_path(self) -> None:
         """to_dict() includes key_path but not passphrase."""
         config = AuthConfig(
@@ -250,6 +252,7 @@ class TestHelperFunctions:
 class TestKeyLoading:
     """Test private key loading with error handling."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix path separators in assertions")
     def test_load_key_file_not_found(self) -> None:
         """load_private_key raises KeyLoadError for missing file."""
         with pytest.raises(KeyLoadError) as exc_info:
@@ -259,6 +262,7 @@ class TestKeyLoading:
         assert error.context.key_path == "/nonexistent/key/path"
         assert "file_not_found" in error.to_dict().get("reason", "")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not available on Windows")
     def test_load_key_permission_denied(self, tmp_path: Path) -> None:
         """load_private_key raises KeyLoadError for unreadable file."""
         key_file = tmp_path / "unreadable_key"
@@ -294,6 +298,7 @@ class TestKeyLoading:
 # Agent Detection Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SSH agent uses Unix sockets (SSH_AUTH_SOCK)")
 class TestAgentDetection:
     """Test SSH agent availability checking."""
 
@@ -822,6 +827,7 @@ class TestSecurityKeyLoading:
             error = exc_info.value
             assert "file_not_found" in error.to_dict().get("reason", "")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not available on Windows")
     def test_load_security_key_file_permission_denied(self, tmp_path: Path) -> None:
         """load_security_key_file raises KeyLoadError for unreadable file."""
         with patch("nbs_ssh.auth.check_security_key_available", return_value=True):

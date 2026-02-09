@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
@@ -152,7 +153,6 @@ class TestHelpOutput:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "linux", reason="MockSSHServer CLI tests require Linux (timing-sensitive)")
 async def test_cli_exec_command(mock_ssh_server: "MockSSHServer") -> None:
     """
     Test CLI can execute a command via MockSSHServer.
@@ -182,14 +182,16 @@ async def test_cli_exec_command(mock_ssh_server: "MockSSHServer") -> None:
     cli_module.getpass.getpass = lambda prompt: "test"
 
     try:
-        exit_code = await run_command(args)
+        # Disable auto-discovery so the CLI falls through to password auth
+        with patch("nbs_ssh.platform.get_agent_available", return_value=False), \
+             patch("nbs_ssh.platform.get_default_key_paths", return_value=[]):
+            exit_code = await run_command(args)
         assert exit_code == 0
     finally:
         cli_module.getpass.getpass = original_getpass
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "linux", reason="MockSSHServer CLI tests require Linux (timing-sensitive)")
 async def test_cli_exit_code_propagation(mock_ssh_server: "MockSSHServer") -> None:
     """
     Test CLI propagates remote command exit code.
@@ -225,14 +227,15 @@ async def test_cli_exit_code_propagation(mock_ssh_server: "MockSSHServer") -> No
         cli_module.getpass.getpass = lambda prompt: "test"
 
         try:
-            exit_code = await run_command(args)
+            with patch("nbs_ssh.platform.get_agent_available", return_value=False), \
+                 patch("nbs_ssh.platform.get_default_key_paths", return_value=[]):
+                exit_code = await run_command(args)
             assert exit_code == 42
         finally:
             cli_module.getpass.getpass = original_getpass
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "linux", reason="MockSSHServer CLI tests require Linux (timing-sensitive)")
 async def test_cli_events_output(mock_ssh_server: "MockSSHServer") -> None:
     """
     Test CLI outputs JSONL events with --events flag.
@@ -267,7 +270,9 @@ async def test_cli_events_output(mock_ssh_server: "MockSSHServer") -> None:
 
     try:
         sys.stderr = captured_stderr
-        exit_code = await run_command(args)
+        with patch("nbs_ssh.platform.get_agent_available", return_value=False), \
+             patch("nbs_ssh.platform.get_default_key_paths", return_value=[]):
+            exit_code = await run_command(args)
         sys.stderr = original_stderr
 
         assert exit_code == 0
@@ -395,7 +400,6 @@ async def test_cli_uses_default_key_auth() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "linux", reason="MockSSHServer CLI tests require Linux (timing-sensitive)")
 async def test_cli_falls_back_to_password_when_no_keys() -> None:
     """
     Test CLI prompts for password when no agent or keys are available.

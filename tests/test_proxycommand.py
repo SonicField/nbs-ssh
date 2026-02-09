@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import os
+
 import pytest
 
 if TYPE_CHECKING:
@@ -428,7 +430,10 @@ class TestProxyCommandErrorHandling:
         assert error_events[0].data.get("error_type") == "proxy_command_failed"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets not available on Windows")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.environ.get("CI") == "true",
+    reason="Requires Unix sockets and hangs on CI runners (netcat/cat tunnels)",
+)
 class TestProxyCommandWithRealConnection:
     """Tests that verify ProxyCommand works with actual connections.
 

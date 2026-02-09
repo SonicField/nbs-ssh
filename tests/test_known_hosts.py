@@ -8,6 +8,7 @@ Validates that SSHConnection and SSHSupervisor accept:
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ class TestKnownHostsNormalisation:
         assert result == "/path/to/known_hosts"
         assert isinstance(result, str)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix path separators in assertions")
     def test_known_hosts_single_path(self) -> None:
         """known_hosts=Path should store as string."""
         known_hosts = Path("/path/to/known_hosts")
@@ -70,6 +72,7 @@ class TestKnownHostsNormalisation:
         assert result == ["/path/one", "/path/two"]
         assert isinstance(result, list)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix path separators in assertions")
     def test_known_hosts_list_of_paths(self) -> None:
         """known_hosts=[Path, Path] should store as list of strings."""
         known_hosts = [Path("/path/one"), Path("/path/two")]
@@ -85,6 +88,7 @@ class TestKnownHostsNormalisation:
         assert isinstance(result, list)
         assert all(isinstance(p, str) for p in result)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix path separators in assertions")
     def test_known_hosts_mixed_list(self) -> None:
         """known_hosts=[Path, str] should store as list of strings."""
         known_hosts = [Path("/path/one"), "/path/two"]
@@ -137,6 +141,7 @@ async def test_connection_known_hosts_none() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix path separators in assertions")
 async def test_connection_stores_known_hosts_as_list() -> None:
     """Test that SSHConnection correctly stores known_hosts list."""
     from nbs_ssh.auth import create_password_auth
@@ -160,6 +165,7 @@ async def test_connection_stores_known_hosts_as_list() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix path separators in assertions")
 async def test_connection_stores_known_hosts_as_string() -> None:
     """Test that SSHConnection correctly stores single known_hosts path."""
     from nbs_ssh.auth import create_password_auth
