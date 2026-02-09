@@ -17,36 +17,43 @@ AI-inspectable SSH client library and CLI built on AsyncSSH.
 
 ## Installation
 
+Requires Python 3.12+.
+
 ```bash
-pip install nbs-ssh
+pip install git+https://github.com/SonicField/nbs-ssh.git
 ```
 
-### Platform Prerequisites
+This installs the `nbs-ssh` command into your Python environment's `bin/` directory. It's available directly if you're in an activated venv, or via `pipx` which manages PATH for you.
+
+### Using pipx (recommended for CLI use)
+
+[pipx](https://pipx.pypa.io/) installs the tool in an isolated environment and puts `nbs-ssh` on your PATH automatically.
 
 **Linux (Debian/Ubuntu):**
 ```bash
 sudo apt install pipx
-pipx install nbs-ssh
+pipx install git+https://github.com/SonicField/nbs-ssh.git
 ```
 
 **macOS:**
 ```bash
-brew install python@3.12
-pip install nbs-ssh
+brew install pipx
+pipx install git+https://github.com/SonicField/nbs-ssh.git
 ```
 
 **Windows:**
 ```powershell
 winget install Python.Python.3.12
-pip install nbs-ssh
+pip install pipx
+pipx install git+https://github.com/SonicField/nbs-ssh.git
 ```
 
 ### Optional Extras
 
 ```bash
-pip install nbs-ssh[fido2]   # FIDO2/YubiKey support
-pip install nbs-ssh[pkcs11]  # Smart card support
-pip install nbs-ssh[all]     # Everything
+pip install "nbs-ssh[fido2] @ git+https://github.com/SonicField/nbs-ssh.git"   # FIDO2/YubiKey
+pip install "nbs-ssh[pkcs11] @ git+https://github.com/SonicField/nbs-ssh.git"  # Smart cards
+pip install "nbs-ssh[all] @ git+https://github.com/SonicField/nbs-ssh.git"     # Everything
 ```
 
 ## CLI Usage
@@ -63,6 +70,8 @@ nbs-ssh -p 2222 user@host              # Custom port
 nbs-ssh -i ~/.ssh/id_ed25519 user@host # Specific key
 nbs-ssh --events user@host "cmd"       # JSONL event logging
 ```
+
+If `nbs-ssh` isn't on your PATH, use `python -m nbs_ssh` instead.
 
 ## Library Usage
 
