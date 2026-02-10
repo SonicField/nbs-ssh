@@ -346,7 +346,9 @@ async def get_agent_keys() -> list[asyncssh.SSHKey]:
             reason="no_auth_sock",
         )
 
-    if not Path(auth_sock).exists():
+    # On Windows, named pipes (//./pipe/...) don't appear in the filesystem
+    is_named_pipe = auth_sock.startswith("\\\\.\\pipe\\") or auth_sock.startswith("//./pipe/")
+    if not is_named_pipe and not Path(auth_sock).exists():
         raise AgentError(
             f"SSH agent socket not found: {auth_sock}",
             reason="socket_not_found",
@@ -431,7 +433,12 @@ async def get_agent_cert_key_pair(
     subject_key = cert.key
     # Determine agent socket: explicit agent_path > SSH_AUTH_SOCK
     sock_path = agent_path or os.environ.get("SSH_AUTH_SOCK")
-    if not sock_path or not Path(sock_path).exists():
+    if not sock_path:
+        return None
+    # On Unix, check socket exists.  On Windows, named pipes (//./pipe/...)
+    # don't appear in the filesystem — skip the existence check for them.
+    is_named_pipe = sock_path.startswith("\\\\.\\pipe\\") or sock_path.startswith("//./pipe/")
+    if not is_named_pipe and not Path(sock_path).exists():
         return None
 
     try:

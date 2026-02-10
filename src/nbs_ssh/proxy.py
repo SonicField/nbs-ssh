@@ -83,11 +83,17 @@ class ProxyCommandProcess:
         if self._process is not None:
             raise RuntimeError("ProxyCommand already started")
 
-        # Create a Unix socket pair for bidirectional communication
-        # asyncssh expects a socket, so we use a socket pair
-        self._local_sock, self._remote_sock = socket.socketpair(
-            socket.AF_UNIX, socket.SOCK_STREAM
-        )
+        # Create a socket pair for bidirectional communication.
+        # asyncssh expects a socket, so we use a socket pair.
+        # On Unix: AF_UNIX.  On Windows: socketpair() defaults to AF_INET.
+        if hasattr(socket, "AF_UNIX"):
+            self._local_sock, self._remote_sock = socket.socketpair(
+                socket.AF_UNIX, socket.SOCK_STREAM
+            )
+        else:
+            self._local_sock, self._remote_sock = socket.socketpair(
+                socket.AF_INET, socket.SOCK_STREAM
+            )
 
         # Make sockets non-blocking
         self._local_sock.setblocking(False)
