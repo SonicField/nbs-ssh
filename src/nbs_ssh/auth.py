@@ -372,23 +372,23 @@ async def get_agent_cert_key_pair(
     cert_path: Path | str,
 ) -> asyncssh.SSHKeyPair | None:
     """
-    Create an agent-backed key pair from a certificate file.
+    Create a key pair from a certificate identity file.
 
-    Some corporate SSH agents (e.g. fb-sks-agent) support signing but
-    do not enumerate keys.  OpenSSH handles this by reading the identity
-    file (certificate), extracting the public key, and asking the agent
-    to sign with it.
+    When an SSH config IdentityFile points to a certificate (-cert.pub),
+    the corresponding private key is at the same path with -cert.pub
+    stripped.  This matches OpenSSH's behaviour: given identity file
+    ``~/.ssh/id_rsa-cert.pub``, OpenSSH loads the private key from
+    ``~/.ssh/id_rsa`` and the certificate from the -cert.pub file.
 
-    This function replicates that behaviour: it reads the certificate,
-    extracts the subject public key, and creates an SSHAgentKeyPair that
-    delegates signing to the agent.
+    If no private key file is found, attempts to create an agent-backed
+    key pair using the certificate's public key.
 
     Args:
         cert_path: Path to the SSH certificate file (-cert.pub)
 
     Returns:
-        SSHAgentKeyPair with the certificate set, or None if the agent
-        is not available.
+        SSHKeyPair with certificate, or None if neither private key
+        file nor agent is available.
 
     Raises:
         CertificateError: If the certificate cannot be loaded
@@ -407,28 +407,38 @@ async def get_agent_cert_key_pair(
     # Load the certificate
     cert = load_certificate(cert_path)
 
-    # Use the certificate's algorithm and full public data (cert blob).
-    # The SSH agent protocol identifies keys by their public blob.
-    # For certificate-based keys, the agent expects the full certificate
-    # blob — not just the raw subject public key — in signing requests.
-    algorithm = cert.algorithm
-    public_data = cert.public_data
+    # Look for the corresponding private key file.
+    # OpenSSH convention: strip -cert.pub to get the private key path.
+    cert_str = str(cert_path)
+    if cert_str.endswith("-cert.pub"):
+        private_key_path = Path(cert_str[:-len("-cert.pub")])
+        if private_key_path.exists() and os.access(private_key_path, os.R_OK):
+            try:
+                key = load_private_key(private_key_path)
+                # Create key pair with certificate
+                key_pair = asyncssh.load_keypairs(key)[0]
+                key_pair.set_certificate(cert)
+                return key_pair
+            except (KeyLoadError, Exception):
+                pass  # Fall through to agent-based approach
 
-    # Connect to the agent and create a key pair
+    # Fallback: try agent-based signing with the cert's public key
+    subject_key = cert.key
     auth_sock = os.environ.get("SSH_AUTH_SOCK")
     if not auth_sock or not Path(auth_sock).exists():
         return None
 
     try:
         agent = await asyncssh.connect_agent()
+        # Try with raw public key (standard agent protocol)
         key_pair = SSHAgentKeyPair(
-            agent, algorithm, public_data, b"cert-identity"
+            agent, subject_key.algorithm, subject_key.public_data,
+            b"cert-identity",
         )
-        # Don't call set_certificate() — the cert algorithm and blob are
-        # already baked into the SSHAgentKeyPair via constructor args.
-        # SSHAgentKeyPair.__init__ detects the -cert-v01 algorithm suffix
-        # and configures itself as a certificate key pair.
+        key_pair.set_certificate(cert)
         return key_pair
+    except Exception:
+        return None
     except Exception:
         return None
 
