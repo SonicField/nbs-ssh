@@ -11,6 +11,7 @@ Tests:
 from __future__ import annotations
 
 import base64
+import sys
 import tempfile
 from pathlib import Path
 
@@ -703,6 +704,7 @@ class TestViolation1SilentErrorSwallowingLoadKnownHosts:
     A corrupted or permission-denied known_hosts file should log a warning.
     """
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod 000 does not restrict reads on Windows")
     def test_unreadable_known_hosts_logs_warning(self, tmp_path, caplog) -> None:
         """Permission-denied known_hosts must log a warning, not fail silently."""
         known_hosts = tmp_path / "known_hosts"

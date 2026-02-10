@@ -86,11 +86,12 @@ class TestSSHDirectory:
     def test_get_ssh_dir_windows_fallback_to_home(self) -> None:
         """On Windows without USERPROFILE, falls back to HOME."""
         with patch("nbs_ssh.platform.is_windows", return_value=True):
-            env = {"HOME": "/home/test"}
+            # Use a Windows-style absolute path so the postcondition passes
+            env = {"HOME": "C:\\Users\\fallback"}
             # Remove USERPROFILE
             with patch.dict(os.environ, env, clear=True):
                 result = get_ssh_dir()
-                assert result == Path("/home/test") / ".ssh"
+                assert result == Path("C:\\Users\\fallback") / ".ssh"
 
     def test_get_known_hosts_path(self) -> None:
         """get_known_hosts_path() returns path in ssh directory."""
