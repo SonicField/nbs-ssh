@@ -546,6 +546,9 @@ class ControlMaster:
 
     def _schedule_persist_exit(self) -> None:
         """Schedule exit after persist timeout."""
+        assert self._persist_time is not None and self._persist_time > 0, \
+            f"_schedule_persist_exit called with invalid persist_time: {self._persist_time}"
+
         if self._persist_task:
             self._persist_task.cancel()
 

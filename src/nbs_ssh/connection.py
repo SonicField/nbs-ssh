@@ -1674,6 +1674,8 @@ class _KbdintSSHClient(asyncssh.SSHClient):
         # Otherwise, use password for all prompts
         if self._auth_config.password is not None:
             password_str = _reveal(self._auth_config.password)
+            assert password_str is not None, \
+                "password was set but _reveal returned None — SecureString may have been eradicated"
             return [password_str] * len(prompts)
 
         # No way to respond - cancel auth
@@ -1857,6 +1859,8 @@ class _CombinedSSHClient(asyncssh.SSHClient):
         # Otherwise, use password for all prompts
         if self._auth_config.password is not None:
             password_str = _reveal(self._auth_config.password)
+            assert password_str is not None, \
+                "password was set but _reveal returned None — SecureString may have been eradicated"
             return [password_str] * len(prompts)
 
         # No way to respond - cancel auth

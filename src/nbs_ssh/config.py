@@ -467,7 +467,11 @@ class SSHConfig:
 
         # Apply global options first
         for key, value in self._global_options.items():
-            self._set_option(merged, key, value if isinstance(value, str) else value[0])
+            if isinstance(value, list):
+                for v in value:
+                    self._set_option(merged, key, v)
+            else:
+                self._set_option(merged, key, value)
 
         # First pass: Apply matching Host blocks (skip Match blocks)
         for block in self._host_blocks:

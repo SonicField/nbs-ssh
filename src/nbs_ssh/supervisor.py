@@ -104,12 +104,14 @@ class RetryPolicy:
         assert attempt >= 0, f"attempt must be non-negative, got {attempt}"
 
         delay = self.base_delay_sec * (self.exponential_base ** attempt)
-        delay = min(delay, self.max_delay_sec)
 
         if self.jitter:
             # Add 0-25% random jitter
             jitter_factor = 1.0 + random.uniform(0, 0.25)
             delay *= jitter_factor
+
+        # Cap AFTER jitter so max_delay_sec is a true upper bound
+        delay = min(delay, self.max_delay_sec)
 
         return delay
 
@@ -594,6 +596,25 @@ class SSHSupervisor:
                 )
                 # Loop continues with next attempt
 
+    # Valid state transitions per the state machine documented in ConnectionState
+    _VALID_TRANSITIONS: dict[ConnectionState, set[ConnectionState]] = {
+        ConnectionState.DISCONNECTED: {ConnectionState.CONNECTING},
+        ConnectionState.CONNECTING: {
+            ConnectionState.CONNECTED,
+            ConnectionState.RECONNECTING,
+            ConnectionState.FAILED,
+        },
+        ConnectionState.CONNECTED: {
+            ConnectionState.DISCONNECTED,
+            ConnectionState.RECONNECTING,
+        },
+        ConnectionState.RECONNECTING: {
+            ConnectionState.CONNECTING,
+            ConnectionState.FAILED,
+        },
+        ConnectionState.FAILED: {ConnectionState.DISCONNECTED},
+    }
+
     async def _transition_to(
         self,
         new_state: ConnectionState,
@@ -608,6 +629,10 @@ class SSHSupervisor:
         """
         async with self._state_lock:
             old_state = self._state
+
+            assert new_state in self._VALID_TRANSITIONS.get(old_state, set()), \
+                f"Invalid state transition: {old_state.value} -> {new_state.value}"
+
             self._state = new_state
 
             if new_state != ConnectionState.CONNECTED:
