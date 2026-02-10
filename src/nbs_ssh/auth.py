@@ -368,6 +368,66 @@ async def get_agent_keys() -> list[asyncssh.SSHKey]:
         ) from e
 
 
+async def get_agent_cert_key_pair(
+    cert_path: Path | str,
+) -> asyncssh.SSHKeyPair | None:
+    """
+    Create an agent-backed key pair from a certificate file.
+
+    Some corporate SSH agents (e.g. fb-sks-agent) support signing but
+    do not enumerate keys.  OpenSSH handles this by reading the identity
+    file (certificate), extracting the public key, and asking the agent
+    to sign with it.
+
+    This function replicates that behaviour: it reads the certificate,
+    extracts the subject public key, and creates an SSHAgentKeyPair that
+    delegates signing to the agent.
+
+    Args:
+        cert_path: Path to the SSH certificate file (-cert.pub)
+
+    Returns:
+        SSHAgentKeyPair with the certificate set, or None if the agent
+        is not available.
+
+    Raises:
+        CertificateError: If the certificate cannot be loaded
+    """
+    from asyncssh.agent import SSHAgentKeyPair
+
+    cert_path = expand_path(cert_path)
+
+    if not cert_path.exists():
+        raise CertificateError(
+            f"Certificate file not found: {cert_path}",
+            cert_path=str(cert_path),
+            reason="file_not_found",
+        )
+
+    # Load the certificate
+    cert = load_certificate(cert_path)
+
+    # Extract the subject public key
+    subject_key = cert.key
+    algorithm = subject_key.algorithm
+    public_data = subject_key.public_data
+
+    # Connect to the agent and create a key pair
+    auth_sock = os.environ.get("SSH_AUTH_SOCK")
+    if not auth_sock or not Path(auth_sock).exists():
+        return None
+
+    try:
+        agent = await asyncssh.connect_agent()
+        key_pair = SSHAgentKeyPair(
+            agent, algorithm, public_data, b"cert-identity"
+        )
+        key_pair.set_certificate(cert)
+        return key_pair
+    except Exception:
+        return None
+
+
 def create_password_auth(password: str) -> AuthConfig:
     """Create password authentication config."""
     return AuthConfig(method=AuthMethod.PASSWORD, password=password)

@@ -880,11 +880,18 @@ class SSHConnection:
                 options["client_certs"] = [cert]
 
         elif auth_config.method == AuthMethod.SSH_AGENT:
-            agent_keys = await get_agent_keys()
-            if not agent_keys:
-                raise AgentError("No keys available from SSH agent")
-            options["client_keys"] = agent_keys
-            options["password"] = None
+            # Check for pre-built agent key pair (from certificate identity)
+            agent_key_pair = getattr(auth_config, '_agent_key_pair', None)
+            if agent_key_pair is not None:
+                log.info("Using certificate-backed agent key pair")
+                options["client_keys"] = [agent_key_pair]
+                options["password"] = None
+            else:
+                agent_keys = await get_agent_keys()
+                if not agent_keys:
+                    raise AgentError("No keys available from SSH agent")
+                options["client_keys"] = agent_keys
+                options["password"] = None
 
         elif auth_config.method == AuthMethod.GSSAPI:
             options["gss_auth"] = True

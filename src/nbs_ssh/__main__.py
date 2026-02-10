@@ -909,14 +909,48 @@ async def run_command(args: argparse.Namespace) -> int:
         explicit_auth = True
     elif host_config.identity_file:
         # Use identity files from config if no CLI identity specified
-        # Skip .pub files — they are public keys or certificates, not private keys.
-        # OpenSSH uses IdentityFile to locate the private key and infers
-        # the .pub / -cert.pub paths from it.
         for key_path in host_config.identity_file:
-            if str(key_path).endswith(".pub"):
-                continue
-            if key_path.exists() and os.access(key_path, os.R_OK):
+            if str(key_path).endswith("-cert.pub"):
+                # Certificate file — will be paired with agent below
+                # (stored for async resolution after config building)
+                pass  # Handled in agent cert key pair section below
+            elif str(key_path).endswith(".pub"):
+                continue  # Skip plain public keys
+            elif key_path.exists() and os.access(key_path, os.R_OK):
                 auth_configs.append(create_key_auth(key_path))
+
+    # Handle certificate identity files: create agent-backed key pairs
+    # that use the certificate for publickey auth with agent signing.
+    # This must be async — done after sync config building.
+    cert_identity_files = [
+        p for p in (host_config.identity_file or [])
+        if str(p).endswith("-cert.pub") and p.exists()
+    ]
+    if cert_identity_files and not explicit_auth:
+        from nbs_ssh.auth import get_agent_cert_key_pair
+        for cert_path in cert_identity_files:
+            try:
+                key_pair = await get_agent_cert_key_pair(cert_path)
+                if key_pair is not None:
+                    # Insert at front — cert auth should be tried first
+                    # (matches OpenSSH behaviour for IdentityFile certs)
+                    from nbs_ssh.auth import AuthConfig, AuthMethod
+                    cert_auth = AuthConfig(
+                        method=AuthMethod.SSH_AGENT,
+                    )
+                    # Store the key pair on the config for _try_auth_method
+                    cert_auth._agent_key_pair = key_pair  # type: ignore[attr-defined]
+                    auth_configs.insert(0, cert_auth)
+                    if verbose > 0:
+                        logger = logging.getLogger("nbs_ssh.cli")
+                        logger.info(
+                            "Certificate identity: %s (agent-backed)",
+                            cert_path,
+                        )
+            except Exception as e:
+                if verbose > 0:
+                    logger = logging.getLogger("nbs_ssh.cli")
+                    logger.info("Failed to load certificate %s: %s", cert_path, e)
 
     if args.password:
         if batch_mode:
