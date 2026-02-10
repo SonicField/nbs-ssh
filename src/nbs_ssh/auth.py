@@ -407,10 +407,12 @@ async def get_agent_cert_key_pair(
     # Load the certificate
     cert = load_certificate(cert_path)
 
-    # Extract the subject public key
-    subject_key = cert.key
-    algorithm = subject_key.algorithm
-    public_data = subject_key.public_data
+    # Use the certificate's algorithm and full public data (cert blob).
+    # The SSH agent protocol identifies keys by their public blob.
+    # For certificate-based keys, the agent expects the full certificate
+    # blob — not just the raw subject public key — in signing requests.
+    algorithm = cert.algorithm
+    public_data = cert.public_data
 
     # Connect to the agent and create a key pair
     auth_sock = os.environ.get("SSH_AUTH_SOCK")
@@ -422,7 +424,10 @@ async def get_agent_cert_key_pair(
         key_pair = SSHAgentKeyPair(
             agent, algorithm, public_data, b"cert-identity"
         )
-        key_pair.set_certificate(cert)
+        # Don't call set_certificate() — the cert algorithm and blob are
+        # already baked into the SSHAgentKeyPair via constructor args.
+        # SSHAgentKeyPair.__init__ detects the -cert-v01 algorithm suffix
+        # and configures itself as a certificate key pair.
         return key_pair
     except Exception:
         return None

@@ -851,11 +851,14 @@ class SSHConnection:
             # sees no credentials and skips auth entirely.
             options["client_keys"] = []
             options["password"] = None
+            log.debug("kbdint config: client_keys=[], password=None, sentinel active")
 
         elif auth_config.method == AuthMethod.PASSWORD:
             if auth_config.password is not None:
                 password_value = _reveal(auth_config.password)
+                log.debug("Using explicit password")
             elif auth_config.password_callback is not None:
+                log.debug("Invoking lazy password callback")
                 loop = asyncio.get_event_loop()
                 raw_password = await loop.run_in_executor(
                     None, auth_config.password_callback
@@ -872,10 +875,12 @@ class SSHConnection:
 
         elif auth_config.method == AuthMethod.PRIVATE_KEY:
             assert auth_config.key_path is not None
+            log.debug("Loading private key: %s", auth_config.key_path)
             key = load_private_key(auth_config.key_path, _reveal(auth_config.passphrase))
             options["client_keys"] = [key]
             options["password"] = None
             if auth_config.certificate_path is not None:
+                log.debug("Loading certificate: %s", auth_config.certificate_path)
                 cert = load_certificate(auth_config.certificate_path)
                 options["client_certs"] = [cert]
 
@@ -884,12 +889,19 @@ class SSHConnection:
             agent_key_pair = getattr(auth_config, '_agent_key_pair', None)
             if agent_key_pair is not None:
                 log.info("Using certificate-backed agent key pair")
+                log.debug(
+                    "  key algorithm: %s, has_cert: %s",
+                    agent_key_pair.get_algorithm(),
+                    agent_key_pair.has_cert(),
+                )
                 options["client_keys"] = [agent_key_pair]
                 options["password"] = None
             else:
+                log.debug("Enumerating agent keys")
                 agent_keys = await get_agent_keys()
                 if not agent_keys:
                     raise AgentError("No keys available from SSH agent")
+                log.debug("Agent provided %d key(s)", len(agent_keys))
                 options["client_keys"] = agent_keys
                 options["password"] = None
 
