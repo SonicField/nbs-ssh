@@ -41,6 +41,10 @@ class SSHHostConfig:
     user: str | None = None
     connect_timeout: int | None = None
 
+    # Keepalive options (ServerAliveInterval / ServerAliveCountMax)
+    server_alive_interval: int | None = None
+    server_alive_count_max: int | None = None
+
     # Authentication options
     identity_file: list[Path] = field(default_factory=list)
     identity_agent: str | None = None  # Path to agent socket (IdentityAgent)
@@ -123,6 +127,8 @@ class SSHConfig:
         "pubkeyacceptedalgorithms": "pubkeyacceptedalgorithms",
         "pubkeyacceptedkeytypes": "pubkeyacceptedalgorithms",  # Deprecated alias
         "connecttimeout": "connecttimeout",
+        "serveraliveinterval": "serveraliveinterval",
+        "serveralivecountmax": "serveralivecountmax",
         "connectionattempts": "connectionattempts",
         "forwardagent": "forwardagent",
         "identityagent": "identityagent",
@@ -572,6 +578,38 @@ class SSHConfig:
                 log.warning(
                     "Invalid ConnectTimeout value '%s', expected integer",
                     options["connecttimeout"],
+                )
+
+        # ServerAliveInterval
+        if "serveraliveinterval" in options:
+            try:
+                val = int(options["serveraliveinterval"])
+                if val >= 0:
+                    config.server_alive_interval = val
+                else:
+                    log.warning(
+                        "ServerAliveInterval must be non-negative, got %d", val
+                    )
+            except ValueError:
+                log.warning(
+                    "Invalid ServerAliveInterval value '%s', expected integer",
+                    options["serveraliveinterval"],
+                )
+
+        # ServerAliveCountMax
+        if "serveralivecountmax" in options:
+            try:
+                val = int(options["serveralivecountmax"])
+                if val > 0:
+                    config.server_alive_count_max = val
+                else:
+                    log.warning(
+                        "ServerAliveCountMax must be positive, got %d", val
+                    )
+            except ValueError:
+                log.warning(
+                    "Invalid ServerAliveCountMax value '%s', expected integer",
+                    options["serveralivecountmax"],
                 )
 
         # IdentityFile (multi-value, with expansion)

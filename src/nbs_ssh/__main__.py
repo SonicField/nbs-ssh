@@ -527,6 +527,24 @@ def create_parser() -> argparse.ArgumentParser:
         help="Connection timeout in seconds (default: 30)",
     )
 
+    parser.add_argument(
+        "--server-alive-interval",
+        type=int,
+        default=None,
+        dest="server_alive_interval",
+        help="Seconds between keepalive probes (default: 60). "
+             "Set to 0 to disable. Matches OpenSSH ServerAliveInterval.",
+    )
+
+    parser.add_argument(
+        "--server-alive-count-max",
+        type=int,
+        default=None,
+        dest="server_alive_count_max",
+        help="Number of missed keepalives before disconnect (default: 3). "
+             "Matches OpenSSH ServerAliveCountMax.",
+    )
+
     # Port forwarding options (OpenSSH parity)
     parser.add_argument(
         "-L", "--local-forward",
@@ -1113,6 +1131,57 @@ async def run_command(args: argparse.Namespace) -> int:
         proxy_command = proxy_command.replace("%p", str(port))
         proxy_command = proxy_command.replace("%%", "%")
 
+    # Build keepalive config: CLI > -o options > SSH config > defaults
+    # Default: 60s interval, 3 max count = 180s detection (matches macOS ssh)
+    from nbs_ssh.keepalive import KeepaliveConfig
+
+    alive_interval = getattr(args, 'server_alive_interval', None)
+    alive_count_max = getattr(args, 'server_alive_count_max', None)
+
+    # Check -o options
+    if alive_interval is None and 'serveraliveinterval' in ssh_options:
+        try:
+            alive_interval = int(ssh_options['serveraliveinterval'])
+        except ValueError:
+            pass
+    if alive_count_max is None and 'serveralivecountmax' in ssh_options:
+        try:
+            alive_count_max = int(ssh_options['serveralivecountmax'])
+        except ValueError:
+            pass
+
+    # Check SSH config
+    if alive_interval is None and host_config.server_alive_interval is not None:
+        alive_interval = host_config.server_alive_interval
+    if alive_count_max is None and host_config.server_alive_count_max is not None:
+        alive_count_max = host_config.server_alive_count_max
+
+    # Apply defaults
+    if alive_interval is None:
+        alive_interval = 60  # Match macOS default
+    if alive_count_max is None:
+        alive_count_max = 3
+
+    # Build config (interval=0 means disabled)
+    if alive_interval > 0:
+        keepalive = KeepaliveConfig(
+            interval_sec=float(alive_interval),
+            max_count=alive_count_max,
+        )
+    else:
+        keepalive = None
+
+    if verbose > 0:
+        logger = logging.getLogger("nbs_ssh.cli")
+        if keepalive:
+            logger.info(
+                "Keepalive: interval=%ds, max_count=%d (dead after %ds)",
+                alive_interval, alive_count_max,
+                alive_interval * alive_count_max,
+            )
+        else:
+            logger.info("Keepalive: disabled")
+
     # Handle connection multiplexing
     from nbs_ssh import (
         ControlMaster,
@@ -1220,6 +1289,7 @@ async def run_command(args: argparse.Namespace) -> int:
             x11_forwarding=getattr(args, 'forward_x11', False) or getattr(args, 'forward_x11_trusted', False),
             compression=getattr(args, 'compress', False),
             hash_known_hosts=hash_known_hosts,
+            keepalive=keepalive,
         ) as conn:
             # Set up port forwarding if requested
             forward_manager = ForwardManager(emitter=event_collector)
