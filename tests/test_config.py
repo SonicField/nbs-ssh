@@ -1013,3 +1013,79 @@ Match all
         # An fbinfra.net host should also get the proxy
         cfg2 = ssh_config.lookup("server.od.fbinfra.net")
         assert cfg2.proxy_command is not None
+
+
+# ---------------------------------------------------------------------------
+# IdentityAgent Tests
+# ---------------------------------------------------------------------------
+
+class TestIdentityAgent:
+    """Test IdentityAgent directive parsing."""
+
+    def test_identity_agent_parsed(self, tmp_path: Path) -> None:
+        """IdentityAgent sets the agent socket path."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Host *
+    IdentityAgent /path/to/agent.sock
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        host_config = ssh_config.lookup("example.com")
+
+        assert host_config.identity_agent == "/path/to/agent.sock"
+
+    def test_identity_agent_tilde_expanded(self, tmp_path: Path) -> None:
+        """IdentityAgent expands ~ to home directory."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Host *
+    IdentityAgent ~/.fb-sks-agent/agent.sock
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        host_config = ssh_config.lookup("example.com")
+
+        assert host_config.identity_agent is not None
+        assert "~" not in host_config.identity_agent
+        assert "agent.sock" in host_config.identity_agent
+
+    def test_identity_agent_none_disables(self, tmp_path: Path) -> None:
+        """IdentityAgent none disables agent override."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Host *
+    IdentityAgent none
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        host_config = ssh_config.lookup("example.com")
+
+        assert host_config.identity_agent is None
+
+    def test_identity_agent_in_match_block(self, tmp_path: Path) -> None:
+        """IdentityAgent can be set in a Match host block."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Match host *.facebook.com
+    IdentityAgent /path/to/fb-agent.sock
+    IdentityFile /path/to/cert.pub
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        cfg = ssh_config.lookup("devgpu.facebook.com")
+
+        assert cfg.identity_agent == "/path/to/fb-agent.sock"
+
+    def test_identity_agent_not_set_by_default(self, tmp_path: Path) -> None:
+        """IdentityAgent is None when not configured."""
+        config_file = tmp_path / "config"
+        config_file.write_text("""
+Host test
+    User testuser
+""")
+
+        ssh_config = SSHConfig(config_files=[config_file])
+        host_config = ssh_config.lookup("test")
+
+        assert host_config.identity_agent is None

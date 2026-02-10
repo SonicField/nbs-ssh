@@ -1084,3 +1084,166 @@ class TestLazyPasswordConnectionIntegration:
                 result = await conn.exec("echo hello")
                 assert result.exit_code == 0
 
+
+# ---------------------------------------------------------------------------
+# Certificate Identity File Tests
+# ---------------------------------------------------------------------------
+
+class TestCertIdentityFile:
+    """Test certificate-backed authentication from identity files."""
+
+    @pytest.mark.asyncio
+    async def test_cert_with_private_key_file(self, tmp_path: Path) -> None:
+        """get_agent_cert_key_pair loads private key + cert when key file exists."""
+        import asyncssh
+        from nbs_ssh.auth import get_agent_cert_key_pair
+
+        # Generate a test key pair
+        private_key = asyncssh.generate_private_key("ssh-ed25519")
+
+        # Generate a certificate for the key (self-signed for testing)
+        ca_key = asyncssh.generate_private_key("ssh-ed25519")
+        cert = ca_key.generate_user_certificate(
+            private_key, "testuser",
+        )
+
+        # Write the private key at the expected path (strip -cert.pub)
+        key_path = tmp_path / "testuser"
+        key_path.write_bytes(private_key.export_private_key())
+        key_path.chmod(0o600)
+
+        # Write the certificate
+        cert_path = tmp_path / "testuser-cert.pub"
+        cert_path.write_bytes(cert.export_certificate())
+
+        # Should load the private key and pair with cert
+        key_pair = await get_agent_cert_key_pair(cert_path)
+
+        assert key_pair is not None
+        assert key_pair.has_cert
+
+    @pytest.mark.asyncio
+    async def test_cert_without_key_file_no_agent(self, tmp_path: Path) -> None:
+        """get_agent_cert_key_pair returns None when no key file and no agent."""
+        import asyncssh
+        from nbs_ssh.auth import get_agent_cert_key_pair
+
+        # Generate a certificate (no corresponding private key file)
+        ca_key = asyncssh.generate_private_key("ssh-ed25519")
+        subject_key = asyncssh.generate_private_key("ssh-ed25519")
+        cert = ca_key.generate_user_certificate(subject_key, "testuser")
+
+        cert_path = tmp_path / "testuser-cert.pub"
+        cert_path.write_bytes(cert.export_certificate())
+
+        # No private key file, no agent → should return None
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SSH_AUTH_SOCK", None)
+            result = await get_agent_cert_key_pair(cert_path)
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_cert_file_not_found_raises(self, tmp_path: Path) -> None:
+        """get_agent_cert_key_pair raises CertificateError for missing cert."""
+        from nbs_ssh.auth import get_agent_cert_key_pair
+        from nbs_ssh.errors import CertificateError
+
+        nonexistent = tmp_path / "nonexistent-cert.pub"
+
+        with pytest.raises(CertificateError):
+            await get_agent_cert_key_pair(nonexistent)
+
+    @pytest.mark.asyncio
+    async def test_cert_key_pair_used_for_auth(self, tmp_path: Path) -> None:
+        """Certificate key pair (without cert) can authenticate to mock server."""
+        import asyncssh
+        from nbs_ssh.auth import get_agent_cert_key_pair, create_key_auth
+        from nbs_ssh.connection import SSHConnection
+        from nbs_ssh.testing.mock_server import MockServerConfig, MockSSHServer
+
+        # Generate CA, user key, and certificate
+        ca_key = asyncssh.generate_private_key("ssh-ed25519")
+        private_key = asyncssh.generate_private_key("ssh-ed25519")
+        cert = ca_key.generate_user_certificate(private_key, "test")
+
+        # Write key and cert files
+        key_path = tmp_path / "testuser"
+        key_path.write_bytes(private_key.export_private_key())
+        key_path.chmod(0o600)
+
+        cert_path = tmp_path / "testuser-cert.pub"
+        cert_path.write_bytes(cert.export_certificate())
+
+        # get_agent_cert_key_pair should load the key+cert
+        key_pair = await get_agent_cert_key_pair(cert_path)
+        assert key_pair is not None
+        assert key_pair.has_cert
+
+        # Verify the key pair can be used for auth by using the
+        # underlying private key directly (mock server doesn't support
+        # certificate verification — it checks raw public keys)
+        public_key = private_key.export_public_key().decode("utf-8")
+        config = MockServerConfig(
+            username="test",
+            password="test",
+            authorized_keys=[public_key],
+        )
+
+        async with MockSSHServer(config) as server:
+            # Use create_key_auth with the cert for a simpler test path
+            async with SSHConnection(
+                host="localhost",
+                port=server.port,
+                username="test",
+                auth=create_key_auth(key_path, certificate_path=cert_path),
+                known_hosts=None,
+            ) as conn:
+                result = await conn.exec("echo hello")
+                assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Password Sentinel Tests
+# ---------------------------------------------------------------------------
+
+class TestPasswordSentinel:
+    """Test that the password sentinel enables kbdint in asyncssh."""
+
+    def test_combined_client_sentinel_returns_empty_password(self) -> None:
+        """With use_password_sentinel=True, password_auth_requested returns ''."""
+        from nbs_ssh.connection import _CombinedSSHClient
+
+        client = _CombinedSSHClient(use_password_sentinel=True)
+        assert client.password_auth_requested() == ""
+
+    def test_combined_client_no_sentinel_returns_none(self) -> None:
+        """Without sentinel, password_auth_requested returns None."""
+        from nbs_ssh.connection import _CombinedSSHClient
+
+        client = _CombinedSSHClient(use_password_sentinel=False)
+        assert client.password_auth_requested() is None
+
+    def test_combined_client_default_no_sentinel(self) -> None:
+        """Default _CombinedSSHClient has no sentinel."""
+        from nbs_ssh.connection import _CombinedSSHClient
+
+        client = _CombinedSSHClient()
+        assert client.password_auth_requested() is None
+
+    def test_combined_client_kbdint_requested_with_config(self) -> None:
+        """kbdint_auth_requested returns '' when auth_config is set."""
+        from nbs_ssh.connection import _CombinedSSHClient
+        from nbs_ssh.auth import create_keyboard_interactive_auth
+
+        kbdint_config = create_keyboard_interactive_auth(password="test")
+        client = _CombinedSSHClient(auth_config=kbdint_config)
+
+        assert client.kbdint_auth_requested() == ""
+
+    def test_combined_client_kbdint_requested_without_config(self) -> None:
+        """kbdint_auth_requested returns None when no auth_config."""
+        from nbs_ssh.connection import _CombinedSSHClient
+
+        client = _CombinedSSHClient()
+        assert client.kbdint_auth_requested() is None
+

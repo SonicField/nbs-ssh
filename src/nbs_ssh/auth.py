@@ -445,8 +445,6 @@ async def get_agent_cert_key_pair(
         return key_pair
     except Exception:
         return None
-    except Exception:
-        return None
 
 
 def create_password_auth(password: str) -> AuthConfig:
