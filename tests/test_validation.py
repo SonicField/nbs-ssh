@@ -79,8 +79,8 @@ class TestValidateHostname:
             validate_hostname("")
 
     def test_none_hostname_rejected(self) -> None:
-        """Reject None hostname."""
-        with pytest.raises(ValueError, match="must not be empty"):
+        """Reject None hostname with type error, not empty error."""
+        with pytest.raises(ValueError, match="must be a string"):
             validate_hostname(None)  # type: ignore
 
     def test_too_long_hostname_rejected(self) -> None:
@@ -214,8 +214,8 @@ class TestValidateUsername:
             validate_username("")
 
     def test_none_username_rejected(self) -> None:
-        """Reject None username."""
-        with pytest.raises(ValueError, match="must not be empty"):
+        """Reject None username with type error, not empty error."""
+        with pytest.raises(ValueError, match="must be a string"):
             validate_username(None)  # type: ignore
 
     def test_too_long_username_rejected(self) -> None:

@@ -47,6 +47,11 @@ def _check_dangerous_chars(value: str, field_name: str) -> None:
     Raises:
         ValueError: If dangerous characters are found
     """
+    assert isinstance(value, str), \
+        f"Precondition: value must be str, got {type(value).__name__}"
+    assert isinstance(field_name, str) and field_name, \
+        f"Precondition: field_name must be non-empty str, got {field_name!r}"
+
     for char in value:
         if char in DANGEROUS_CHARS:
             # Provide readable name for control characters
@@ -85,13 +90,13 @@ def validate_hostname(hostname: str) -> str:
     Raises:
         ValueError: If the hostname is invalid, with a clear message
     """
-    # Check for None or empty
-    if not hostname:
-        raise ValueError("hostname must not be empty")
-
-    # Check type
+    # Check type first (before emptiness, so None gets the right error)
     if not isinstance(hostname, str):
         raise ValueError(f"hostname must be a string, got {type(hostname).__name__}")
+
+    # Check for empty
+    if not hostname:
+        raise ValueError("hostname must not be empty")
 
     # Check for dangerous characters first (before any processing)
     _check_dangerous_chars(hostname, "hostname")
@@ -143,8 +148,11 @@ def validate_hostname(hostname: str) -> str:
                     "(only alphanumeric and hyphens allowed)"
                 )
 
-    # Return normalised (lowercase) hostname
-    return hostname.lower()
+    # Postcondition: result is normalised lowercase
+    result = hostname.lower()
+    assert 0 < len(result) <= MAX_HOSTNAME_LENGTH, \
+        f"Postcondition: normalised hostname length {len(result)} out of range"
+    return result
 
 
 def validate_username(username: str) -> str:
@@ -166,13 +174,13 @@ def validate_username(username: str) -> str:
     Raises:
         ValueError: If the username is invalid, with a clear message
     """
-    # Check for None or empty
-    if not username:
-        raise ValueError("username must not be empty")
-
-    # Check type
+    # Check type first (before emptiness, so None gets the right error)
     if not isinstance(username, str):
         raise ValueError(f"username must be a string, got {type(username).__name__}")
+
+    # Check for empty
+    if not username:
+        raise ValueError("username must not be empty")
 
     # Check for dangerous characters first
     _check_dangerous_chars(username, "username")
@@ -205,6 +213,8 @@ def validate_username(username: str) -> str:
                 "(only alphanumeric, underscore, and hyphen allowed)"
             )
 
+    assert _USERNAME_PATTERN.match(username), \
+        f"Postcondition: validated username does not match pattern: {username!r}"
     return username
 
 
@@ -225,13 +235,13 @@ def validate_port(port: int) -> int:
     Raises:
         ValueError: If the port is invalid, with a clear message
     """
+    # Reject bool first (bool is a subclass of int in Python)
+    if isinstance(port, bool):
+        raise ValueError("port must be an integer, got bool")
+
     # Check type
     if not isinstance(port, int):
         raise ValueError(f"port must be an integer, got {type(port).__name__}")
-
-    # Reject bool (which is a subclass of int in Python)
-    if isinstance(port, bool):
-        raise ValueError("port must be an integer, got bool")
 
     # Check range
     if port < 1:
@@ -240,4 +250,6 @@ def validate_port(port: int) -> int:
     if port > 65535:
         raise ValueError(f"port must be at most 65535, got {port}")
 
+    assert 1 <= port <= 65535, \
+        f"Postcondition: port {port} outside valid range 1-65535"
     return port
