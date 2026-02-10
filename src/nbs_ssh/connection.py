@@ -1399,11 +1399,10 @@ class SSHConnection:
         Run interactive shell on Windows using Console API.
 
         Uses ctypes to set the console to raw mode (disable line input,
-        disable echo, enable VT input/output processing) and msvcrt
-        for character-by-character reading.
+        disable echo, enable VT input/output processing) and os.read
+        for VT-aware input reading.
         """
         import ctypes
-        import msvcrt
 
         assert self._conn is not None, "Not connected. Use async with SSHConnection(...):"
 
@@ -1473,20 +1472,26 @@ class SSHConnection:
 
             loop = asyncio.get_event_loop()
             done = False
+            stdin_fd = sys.stdin.fileno()
 
             async def read_stdin() -> None:
                 nonlocal done
                 while not done:
                     try:
-                        # msvcrt.getwch blocks — run in executor
-                        if await loop.run_in_executor(None, msvcrt.kbhit):
-                            ch = await loop.run_in_executor(
-                                None, msvcrt.getwch
+                        # Use os.read on stdin fd — respects console mode
+                        # (ENABLE_VIRTUAL_TERMINAL_INPUT) and returns proper
+                        # VT escape sequences for arrow keys, function keys,
+                        # etc.  msvcrt.getwch() bypasses VT processing and
+                        # sends raw key codes that confuse remote applications.
+                        data = await loop.run_in_executor(
+                            None, lambda: os.read(stdin_fd, 1024)
+                        )
+                        if data:
+                            process.stdin.write(
+                                data.decode("utf-8", errors="replace")
                             )
-                            if ch:
-                                process.stdin.write(ch)
                         else:
-                            await asyncio.sleep(0.01)
+                            break
                     except (OSError, asyncio.CancelledError):
                         break
 
