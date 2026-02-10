@@ -794,6 +794,8 @@ async def run_command(args: argparse.Namespace) -> int:
                 "IdentityFile from config: %s",
                 ", ".join(str(p) for p in host_config.identity_file),
             )
+        if host_config.identity_agent:
+            logger.info("IdentityAgent from config: %s", host_config.identity_agent)
 
     # Resolve proxy settings: CLI > -o options > config
     proxy_jump = getattr(args, 'proxy_jump', None)
@@ -930,7 +932,10 @@ async def run_command(args: argparse.Namespace) -> int:
         from nbs_ssh.auth import get_agent_cert_key_pair
         for cert_path in cert_identity_files:
             try:
-                key_pair = await get_agent_cert_key_pair(cert_path)
+                key_pair = await get_agent_cert_key_pair(
+                    cert_path,
+                    agent_path=host_config.identity_agent,
+                )
                 if key_pair is not None:
                     # Insert at front — cert auth should be tried first
                     # (matches OpenSSH behaviour for IdentityFile certs)

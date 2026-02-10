@@ -370,6 +370,7 @@ async def get_agent_keys() -> list[asyncssh.SSHKey]:
 
 async def get_agent_cert_key_pair(
     cert_path: Path | str,
+    agent_path: str | None = None,
 ) -> asyncssh.SSHKeyPair | None:
     """
     Create a key pair from a certificate identity file.
@@ -381,10 +382,14 @@ async def get_agent_cert_key_pair(
     ``~/.ssh/id_rsa`` and the certificate from the -cert.pub file.
 
     If no private key file is found, attempts to create an agent-backed
-    key pair using the certificate's public key.
+    key pair using the certificate's public key.  The agent_path
+    parameter specifies which agent socket to use (from IdentityAgent
+    in SSH config).
 
     Args:
         cert_path: Path to the SSH certificate file (-cert.pub)
+        agent_path: Path to the SSH agent socket (from IdentityAgent).
+                    If None, uses SSH_AUTH_SOCK.
 
     Returns:
         SSHKeyPair with certificate, or None if neither private key
@@ -424,12 +429,13 @@ async def get_agent_cert_key_pair(
 
     # Fallback: try agent-based signing with the cert's public key
     subject_key = cert.key
-    auth_sock = os.environ.get("SSH_AUTH_SOCK")
-    if not auth_sock or not Path(auth_sock).exists():
+    # Determine agent socket: explicit agent_path > SSH_AUTH_SOCK
+    sock_path = agent_path or os.environ.get("SSH_AUTH_SOCK")
+    if not sock_path or not Path(sock_path).exists():
         return None
 
     try:
-        agent = await asyncssh.connect_agent()
+        agent = await asyncssh.connect_agent(sock_path)
         # Try with raw public key (standard agent protocol)
         key_pair = SSHAgentKeyPair(
             agent, subject_key.algorithm, subject_key.public_data,

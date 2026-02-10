@@ -43,6 +43,7 @@ class SSHHostConfig:
 
     # Authentication options
     identity_file: list[Path] = field(default_factory=list)
+    identity_agent: str | None = None  # Path to agent socket (IdentityAgent)
     identities_only: bool = False
     preferred_authentications: list[str] | None = None
     pubkey_accepted_algorithms: list[str] | None = None
@@ -121,6 +122,7 @@ class SSHConfig:
         "connecttimeout": "connecttimeout",
         "connectionattempts": "connectionattempts",
         "forwardagent": "forwardagent",
+        "identityagent": "identityagent",
         "proxycommand": "proxycommand",
         "proxyjump": "proxyjump",
         "pkcs11provider": "pkcs11provider",
@@ -552,6 +554,12 @@ class SSHConfig:
         if "identitiesonly" in options:
             val = str(options["identitiesonly"]).lower()
             config.identities_only = val in ("yes", "true", "1")
+
+        # IdentityAgent (path to agent socket, with ~ expansion)
+        if "identityagent" in options:
+            agent_path = str(options["identityagent"])
+            if agent_path.lower() != "none":
+                config.identity_agent = os.path.expanduser(agent_path)
 
         # PreferredAuthentications
         if "preferredauthentications" in options:
