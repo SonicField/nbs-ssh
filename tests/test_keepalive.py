@@ -10,6 +10,7 @@ Tests:
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 
 import pytest
@@ -370,6 +371,12 @@ class TestKeepaliveDeadConnection:
             )
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows sends TCP RST immediately on server drop — "
+               "connection dies without keepalive, making the hang "
+               "impossible to observe",
+    )
     async def test_without_keepalive_connection_hangs(self) -> None:
         """WITHOUT keepalive, a dropped server causes a hang.
 
