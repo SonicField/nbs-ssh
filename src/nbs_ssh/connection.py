@@ -892,7 +892,7 @@ class SSHConnection:
                 log.debug(
                     "  key algorithm: %s, has_cert: %s",
                     agent_key_pair.get_algorithm(),
-                    agent_key_pair.has_cert(),
+                    agent_key_pair.has_cert,
                 )
                 options["client_keys"] = [agent_key_pair]
                 options["password"] = None
