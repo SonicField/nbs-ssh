@@ -1182,7 +1182,7 @@ class SSHConnection:
             raise RuntimeError("Interactive shell requires a TTY (stdin is not a terminal)")
 
         if sys.platform == "win32":
-            raise RuntimeError("Interactive shell is not supported on Windows (no termios)")
+            return await self._shell_windows(escape_char)
 
         # Get current terminal size
         try:
@@ -1375,6 +1375,158 @@ class SSHConnection:
             self._disconnect_reason = DisconnectReason.USER_ESCAPE
 
         return process.exit_status or 0
+
+    async def _shell_windows(self, escape_char: str = "~") -> int:
+        """
+        Run interactive shell on Windows using Console API.
+
+        Uses ctypes to set the console to raw mode (disable line input,
+        disable echo, enable VT input/output processing) and msvcrt
+        for character-by-character reading.
+        """
+        import ctypes
+        import msvcrt
+
+        assert self._conn is not None
+
+        # Windows Console API constants
+        STD_INPUT_HANDLE = -10
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_PROCESSED_INPUT = 0x0001
+        ENABLE_LINE_INPUT = 0x0002
+        ENABLE_ECHO_INPUT = 0x0004
+        ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+        ENABLE_PROCESSED_OUTPUT = 0x0001
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+        # Get current terminal size
+        try:
+            term_size = os.get_terminal_size()
+            term_width = term_size.columns
+            term_height = term_size.lines
+        except OSError:
+            term_width = 80
+            term_height = 24
+
+        term_type = os.environ.get("TERM", "xterm-256color")
+
+        start_ms = time.time() * 1000
+
+        self._emitter.emit(
+            EventType.SHELL,
+            status="starting",
+            term=term_type,
+            width=term_width,
+            height=term_height,
+        )
+
+        # Save and set console modes
+        stdin_handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        stdout_handle = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        old_stdin_mode = ctypes.c_uint32()
+        old_stdout_mode = ctypes.c_uint32()
+        kernel32.GetConsoleMode(stdin_handle, ctypes.byref(old_stdin_mode))
+        kernel32.GetConsoleMode(stdout_handle, ctypes.byref(old_stdout_mode))
+
+        # Raw input: disable line input + echo, enable VT sequences
+        kernel32.SetConsoleMode(
+            stdin_handle,
+            ENABLE_VIRTUAL_TERMINAL_INPUT,
+        )
+        # Enable VT output processing
+        kernel32.SetConsoleMode(
+            stdout_handle,
+            old_stdout_mode.value
+            | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            | ENABLE_PROCESSED_OUTPUT,
+        )
+
+        exit_code = 0
+        process = None
+
+        try:
+            process = await self._conn.create_process(
+                None,
+                term_type=term_type,
+                term_size=(term_width, term_height),
+            )
+
+            loop = asyncio.get_event_loop()
+            done = False
+
+            async def read_stdin() -> None:
+                nonlocal done
+                while not done:
+                    try:
+                        # msvcrt.getwch blocks — run in executor
+                        if await loop.run_in_executor(None, msvcrt.kbhit):
+                            ch = await loop.run_in_executor(
+                                None, msvcrt.getwch
+                            )
+                            if ch:
+                                process.stdin.write(ch)
+                        else:
+                            await asyncio.sleep(0.01)
+                    except (OSError, asyncio.CancelledError):
+                        break
+
+            async def read_remote() -> None:
+                nonlocal done
+                while not done:
+                    try:
+                        data = await process.stdout.read(4096)
+                        if data:
+                            sys.stdout.write(data)
+                            sys.stdout.flush()
+                        else:
+                            break
+                    except (asyncssh.ChannelOpenError, asyncio.CancelledError):
+                        break
+
+            stdin_task = asyncio.create_task(read_stdin())
+            remote_task = asyncio.create_task(read_remote())
+            wait_task = asyncio.create_task(process.wait())
+
+            try:
+                await asyncio.wait(
+                    {stdin_task, remote_task, wait_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                done = True
+            finally:
+                for task in [stdin_task, remote_task]:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+            exit_code = process.exit_status or 0
+
+        except Exception as e:
+            self._emitter.emit(
+                EventType.SHELL,
+                status="error",
+                error=str(e),
+            )
+            raise
+
+        finally:
+            # Restore console modes
+            kernel32.SetConsoleMode(stdin_handle, old_stdin_mode)
+            kernel32.SetConsoleMode(stdout_handle, old_stdout_mode)
+
+            duration_ms = (time.time() * 1000) - start_ms
+            self._emitter.emit(
+                EventType.SHELL,
+                status="completed",
+                exit_code=exit_code,
+                duration_ms=duration_ms,
+            )
+
+        return exit_code
 
     def get_evidence_bundle(
         self,
