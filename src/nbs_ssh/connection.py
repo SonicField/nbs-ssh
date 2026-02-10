@@ -691,6 +691,9 @@ class SSHConnection:
                 asyncssh.PermissionDenied,
                 asyncssh.DisconnectError,
                 asyncssh.ConnectionLost,
+                asyncio.TimeoutError,
+                TimeoutError,
+                OSError,
             ) as e:
                 auth_duration_ms = (time.time() * 1000) - auth_start_ms
                 last_error = e
@@ -840,12 +843,13 @@ class SSHConnection:
                 break
 
         if auth_config.method == AuthMethod.KEYBOARD_INTERACTIVE:
-            # Standalone kbdint: don't set client_keys or password.
-            # Leaving client_keys unset lets asyncssh discover the agent
-            # and attempt publickey first.  If publickey fails, asyncssh
-            # falls through to keyboard-interactive using our callbacks.
-            # Setting client_keys=[] explicitly tells asyncssh "no keys"
-            # which can cause it to skip auth entirely.
+            # Standalone kbdint: set empty keys and no password.
+            # The password_sentinel in _CombinedSSHClient makes asyncssh
+            # think credentials exist, so it proceeds through the auth chain
+            # (publickey fails immediately → kbdint via callback → password
+            # sentinel rejected by server).  Without the sentinel, asyncssh
+            # sees no credentials and skips auth entirely.
+            options["client_keys"] = []
             options["password"] = None
 
         elif auth_config.method == AuthMethod.PASSWORD:
@@ -912,6 +916,12 @@ class SSHConnection:
         if verifier is not None or kbdint_config is not None:
             # Use combined client
             client_instance: _CombinedSSHClient | None = None
+            # Only use the password sentinel for standalone kbdint attempts —
+            # it tricks asyncssh into proceeding through the auth chain when
+            # no other credentials are available.
+            needs_sentinel = (
+                auth_config.method == AuthMethod.KEYBOARD_INTERACTIVE
+            )
 
             def create_client() -> _CombinedSSHClient:
                 nonlocal client_instance
@@ -919,6 +929,7 @@ class SSHConnection:
                     verifier=verifier,
                     on_unknown=self._on_unknown_host_key,
                     auth_config=kbdint_config,
+                    use_password_sentinel=needs_sentinel,
                 )
                 client_instance.set_connection_info(self._host, self._port)
                 return client_instance
@@ -1511,6 +1522,7 @@ class _CombinedSSHClient(asyncssh.SSHClient):
         verifier: HostKeyVerifier | None = None,
         on_unknown: Callable[[str, int, asyncssh.SSHKey], bool] | None = None,
         auth_config: AuthConfig | None = None,
+        use_password_sentinel: bool = False,
     ) -> None:
         """
         Initialise combined client.
@@ -1519,11 +1531,16 @@ class _CombinedSSHClient(asyncssh.SSHClient):
             verifier: HostKeyVerifier for checking keys (None to skip)
             on_unknown: Callback for unknown host keys
             auth_config: AuthConfig for keyboard-interactive (None to skip)
+            use_password_sentinel: If True, password_auth_requested returns
+                                   an empty string to keep asyncssh's auth
+                                   chain alive (needed when no other credentials
+                                   are available but kbdint should be tried)
         """
         super().__init__()
         self._verifier = verifier
         self._on_unknown = on_unknown
         self._auth_config = auth_config
+        self._use_password_sentinel = use_password_sentinel
         self._host: str = ""
         self._port: int = 22
         self._result: HostKeyResult | None = None
@@ -1623,6 +1640,19 @@ class _CombinedSSHClient(asyncssh.SSHClient):
             return None
         log.info("kbdint_auth_requested: accepting keyboard-interactive")
         return ""
+
+    def password_auth_requested(self) -> str | None:
+        """Called when asyncssh considers password auth.
+
+        When use_password_sentinel is set, returning a non-None value signals
+        to asyncssh that credentials are available, which makes it proceed
+        through the auth chain rather than giving up after the 'none' probe.
+        This ensures keyboard-interactive is attempted before password.
+        """
+        if self._use_password_sentinel:
+            log.debug("password_auth_requested: returning sentinel to keep auth chain alive")
+            return ""
+        return None
 
     def kbdint_challenge_received(
         self,
