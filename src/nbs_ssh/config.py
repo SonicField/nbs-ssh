@@ -61,6 +61,9 @@ class SSHHostConfig:
 
     def get_hostname(self, original_host: str) -> str:
         """Get the real hostname to connect to."""
+        assert original_host and isinstance(original_host, str), (
+            f"get_hostname() requires a non-empty original_host, got {original_host!r}"
+        )
         return self.hostname if self.hostname else original_host
 
     def get_port(self, default: int = 22) -> int:
@@ -171,8 +174,7 @@ class SSHConfig:
             with open(config_path, "r", encoding="utf-8", errors="replace") as f:
                 self._parse(f.read(), config_path)
         except (OSError, IOError):
-            log.debug("Could not read config file: %s", config_path)
-            pass  # Skip unreadable configs
+            log.warning("Could not read config file: %s", config_path)
 
     def _parse(self, content: str, source_path: Path | None = None) -> None:
         """Parse SSH config content."""
@@ -196,7 +198,13 @@ class SSHConfig:
             else:
                 parts = line.split(None, 1)
                 if len(parts) < 2:
-                    continue  # Skip malformed lines
+                    log.warning(
+                        "Malformed config line %d in %s: '%s' (expected 'Option Value')",
+                        line_no,
+                        source_path or "<unknown>",
+                        line,
+                    )
+                    continue
                 option, value = parts
 
             option = option.strip().lower()
@@ -361,7 +369,12 @@ class SSHConfig:
                 options[name] = []
             # Type assertion for mypy
             option_list = options[name]
-            assert isinstance(option_list, list)
+            assert isinstance(option_list, list), (
+                f"Expected list for multi-value option '{name}', "
+                f"got {type(option_list).__name__}. "
+                f"This indicates _set_option was called after a single-value "
+                f"option was already stored for '{name}'."
+            )
             option_list.append(value)
         else:
             # First match wins for single-value options
@@ -462,6 +475,11 @@ class SSHConfig:
         Returns:
             SSHHostConfig with all applicable options
         """
+        # Precondition: host must be a non-empty string
+        assert host and isinstance(host, str), (
+            f"lookup() requires a non-empty host string, got {host!r}"
+        )
+
         # Start with empty config
         merged: dict[str, str | list[str]] = {}
 
@@ -522,9 +540,19 @@ class SSHConfig:
         # Port (needed for token expansion)
         if "port" in options:
             try:
-                config.port = int(options["port"])
+                port_val = int(options["port"])
+                if not (1 <= port_val <= 65535):
+                    log.warning(
+                        "Port value %d out of valid range (1-65535), ignoring",
+                        port_val,
+                    )
+                else:
+                    config.port = port_val
             except ValueError:
-                pass
+                log.warning(
+                    "Invalid port value '%s', expected integer",
+                    options["port"],
+                )
 
         # Get port for token expansion (use configured or default)
         port_for_tokens = config.port if config.port is not None else 22
@@ -541,7 +569,10 @@ class SSHConfig:
             try:
                 config.connect_timeout = int(options["connecttimeout"])
             except ValueError:
-                pass
+                log.warning(
+                    "Invalid ConnectTimeout value '%s', expected integer",
+                    options["connecttimeout"],
+                )
 
         # IdentityFile (multi-value, with expansion)
         if "identityfile" in options:
@@ -619,6 +650,12 @@ class SSHConfig:
         # ControlPersist
         if "controlpersist" in options:
             config.control_persist = str(options["controlpersist"])
+
+        # Postcondition: if port is set, it must be in valid range
+        assert config.port is None or (1 <= config.port <= 65535), (
+            f"Port postcondition violated: port {config.port} not in range 1-65535. "
+            f"This should have been caught during port parsing above."
+        )
 
         return config
 

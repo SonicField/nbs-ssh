@@ -12,12 +12,15 @@ Two-level freeze detection:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from nbs_ssh.events import EventCollector
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -149,8 +152,10 @@ class ProgressWatchdog:
 
     def start(self) -> None:
         """Start the watchdog timer."""
-        if self._running:
-            return
+        assert not self._running, (
+            "ProgressWatchdog.start() called while already running. "
+            "Call stop() before restarting."
+        )
 
         self._running = True
         self._timed_out = False
@@ -158,8 +163,22 @@ class ProgressWatchdog:
         self._last_progress = time.time()
         self._timer_task = asyncio.create_task(self._timer_loop())
 
+        # Postcondition: watchdog is now fully initialised and running
+        assert self._running and self._timer_task is not None, (
+            "Postcondition violated: start() completed but watchdog state is inconsistent. "
+            f"running={self._running}, timer_task={self._timer_task}"
+        )
+
     def stop(self) -> None:
-        """Stop the watchdog timer."""
+        """Stop the watchdog timer. Idempotent: safe to call after timeout."""
+        if not self._running:
+            logger.debug(
+                "ProgressWatchdog.stop() called when not running "
+                "(timed_out=%s). No action taken.",
+                self._timed_out,
+            )
+            return
+
         self._running = False
         if self._timer_task is not None:
             self._timer_task.cancel()
@@ -171,12 +190,21 @@ class ProgressWatchdog:
 
         Call this whenever output is received to reset the timer.
         """
+        assert self._running, (
+            "ProgressWatchdog.progress() called when not running. "
+            "Call start() before signalling progress."
+        )
         self._last_progress = time.time()
         self._warning_emitted = False  # Reset warning on progress
 
     async def _timer_loop(self) -> None:
         """Internal timer loop for checking progress."""
         check_interval = min(0.1, self._timeout_sec / 10)
+        # Invariant: check_interval must be positive for the sleep to yield
+        assert check_interval > 0, (
+            f"check_interval must be positive, got {check_interval}. "
+            f"Derived from timeout_sec={self._timeout_sec}."
+        )
 
         try:
             while self._running:
@@ -199,7 +227,15 @@ class ProgressWatchdog:
                     break
 
         except asyncio.CancelledError:
-            pass  # Normal cancellation on stop()
+            # Expected path: stop() cancels the timer task.
+            # No cleanup needed; stop() handles state transitions.
+            pass
+        except Exception:
+            # Unexpected error in timer loop. Log and mark as not running
+            # to avoid silent hangs. Re-raise to surface the bug.
+            logger.exception("Unexpected error in ProgressWatchdog timer loop")
+            self._running = False
+            raise
 
     def _emit_warning(self, seconds_remaining: float) -> None:
         """Emit a progress warning event."""
@@ -223,3 +259,9 @@ class ProgressWatchdog:
 
         if self._on_timeout is not None:
             self._on_timeout()
+
+        # Postcondition: after timeout, we must be timed out and not running
+        assert self._timed_out and not self._running, (
+            "Postcondition violated: _handle_timeout() completed but state is inconsistent. "
+            f"timed_out={self._timed_out}, running={self._running}"
+        )

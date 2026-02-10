@@ -21,7 +21,7 @@ Error hierarchy:
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from typing import Any
 
@@ -58,12 +58,30 @@ class ErrorContext:
     original_error: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Validate invariants after initialisation."""
+        # Invariant: port must be in valid TCP range if specified
+        if self.port is not None:
+            assert isinstance(self.port, int) and 1 <= self.port <= 65535, (
+                f"Port must be between 1 and 65535, got {self.port}"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary, excluding None values."""
         result = {}
         for key, value in asdict(self).items():
             if value is not None:
                 if key == "extra" and isinstance(value, dict):
+                    # Precondition: extra keys must not collide with
+                    # dataclass field names, even if those fields are None.
+                    # This prevents subtle bugs where a collision only
+                    # manifests when the field is later populated.
+                    field_names = {f.name for f in fields(self)} - {"extra"}
+                    collisions = field_names & value.keys()
+                    assert not collisions, (
+                        f"Extra keys collision with dataclass field names: "
+                        f"{collisions}. Use distinct key names in extra."
+                    )
                     result.update(value)
                 else:
                     result[key] = value
@@ -78,6 +96,11 @@ class SSHError(Exception):
     """
 
     def __init__(self, message: str, context: ErrorContext | None = None) -> None:
+        # Precondition: message must be non-empty
+        assert isinstance(message, str) and message.strip(), (
+            f"SSHError message must be a non-empty string, "
+            f"got {message!r}"
+        )
         super().__init__(message)
         self.context = context or ErrorContext()
 
@@ -178,6 +201,10 @@ class KeyLoadError(AuthenticationError):
         reason: str | None = None,
         context: ErrorContext | None = None,
     ) -> None:
+        # Precondition: key_path must be None or a non-empty string
+        assert key_path is None or (isinstance(key_path, str) and key_path.strip()), (
+            f"key_path must be None or a non-empty string, got {key_path!r}"
+        )
         if context is None:
             context = ErrorContext()
         context.key_path = key_path

@@ -12,9 +12,12 @@ All operations emit FORWARD events for AI-inspectable diagnostics.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+log = logging.getLogger("nbs_ssh.forwarding")
 
 if TYPE_CHECKING:
     import asyncssh
@@ -59,10 +62,10 @@ class ForwardIntent:
             assert self.remote_port > 0, f"remote_port must be > 0, got {self.remote_port}"
 
         elif self.forward_type == ForwardType.REMOTE:
-            assert self.remote_host is not None or self.local_host is not None, \
-                "REMOTE forward requires either remote_host or local_host"
-            assert self.remote_port is not None or self.local_port is not None, \
-                "REMOTE forward requires either remote_port or local_port"
+            assert self.remote_port is not None, \
+                "REMOTE forward requires remote_port"
+            assert self.local_port > 0, \
+                f"REMOTE forward requires positive local_port (destination), got {self.local_port}"
 
         # DYNAMIC only needs local_host and local_port
 
@@ -106,7 +109,7 @@ class ForwardHandle:
         self._intent = intent
         self._listener = listener
         self._manager = manager
-        self._actual_port = actual_port or intent.local_port
+        self._actual_port = actual_port if actual_port is not None else intent.local_port
         self._closed = False
 
     @property
@@ -133,8 +136,14 @@ class ForwardHandle:
         try:
             self._listener.close()
             await self._listener.wait_closed()
+        except OSError:
+            pass  # Listener already closed — expected during teardown
         except Exception:
-            pass  # Listener may already be closed
+            log.warning(
+                "Unexpected error closing forward listener for %s:%d: ",
+                self._intent.local_host, self._actual_port,
+                exc_info=True,
+            )
 
         self._manager._remove_handle(self)
 
@@ -161,6 +170,10 @@ class ForwardManager:
 
     def set_connection(self, conn: "asyncssh.SSHClientConnection") -> None:
         """Set the SSH connection to use for forwarding."""
+        assert conn is not None, (
+            "Cannot set_connection with None — caller must provide a live "
+            "SSHClientConnection"
+        )
         self._conn = conn
 
     def set_emitter(self, emitter: "EventEmitter") -> None:
@@ -293,7 +306,10 @@ class ForwardManager:
 
     async def _establish_forward(self, intent: ForwardIntent) -> ForwardHandle:
         """Establish a forward from an intent."""
-        assert self._conn is not None
+        assert self._conn is not None, (
+            "No SSH connection set on ForwardManager — call set_connection() "
+            "before establishing forwards"
+        )
 
         self._emit_forward_event(intent, status="establishing")
 
@@ -325,6 +341,11 @@ class ForwardManager:
                     intent.local_port,
                 )
                 actual_port = listener.get_port()
+
+            assert listener is not None, (
+                f"Unhandled forward_type {intent.forward_type!r} — no listener created. "
+                f"This indicates a missing branch in _establish_forward."
+            )
 
             handle = ForwardHandle(
                 intent=intent,

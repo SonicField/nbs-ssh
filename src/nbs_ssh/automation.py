@@ -47,7 +47,7 @@ class ExpectPattern:
 
     def __post_init__(self) -> None:
         """Validate pattern on creation."""
-        assert self.pattern, "Pattern must not be empty"
+        assert self.pattern, f"Pattern must not be empty, got {self.pattern!r}"
         if self.pattern_type == PatternType.REGEX:
             # Validate regex compiles
             try:
@@ -231,8 +231,6 @@ class Transcript:
 
     Provides reproducible evidence of what happened during
     automated command interaction.
-
-    Thread-safe for async usage.
     """
 
     def __init__(self) -> None:
@@ -301,6 +299,9 @@ class Transcript:
         Returns:
             The created TranscriptEntry
         """
+        assert stream in ("stdout", "stderr"), (
+            f"Stream must be 'stdout' or 'stderr', got {stream!r}"
+        )
         entry = TranscriptEntry(
             timestamp_ms=time.time() * 1000,
             interaction_type=InteractionType.OUTPUT,
@@ -399,6 +400,7 @@ class AutomationEngine:
             stream: Async iterator yielding StreamEvent objects
             stdin_write: Callable to write to stdin (optional for expect-only use)
         """
+        assert stream is not None, "Stream must not be None"
         self._stream = stream
         self._stdin_write = stdin_write
         self._buffer: str = ""
@@ -433,6 +435,8 @@ class AutomationEngine:
         Raises:
             ExpectTimeoutError: If pattern not matched within timeout
         """
+        assert timeout > 0, f"Timeout must be positive, got {timeout}"
+
         if isinstance(pattern, str):
             pattern = ExpectPattern(pattern)
 
@@ -556,6 +560,7 @@ class AutomationEngine:
         Returns:
             ExpectResult from the expect operation
         """
+        assert delay >= 0, f"Delay must be non-negative, got {delay}"
         result = await self.expect(pattern, timeout)
 
         if result.matched:
@@ -578,6 +583,7 @@ class AutomationEngine:
         Returns:
             List of ExpectResult objects for each step
         """
+        assert sequence, "Sequence must not be empty — nothing to run"
         results = []
         for step in sequence:
             result = await self.expect(step.pattern, step.timeout.seconds)
@@ -588,4 +594,9 @@ class AutomationEngine:
                     await asyncio.sleep(step.delay.seconds)
                 await self.send(step.response.text, step.response.add_newline)
 
+        # Postcondition: one result per sequence step
+        assert len(results) == len(sequence), (
+            f"Result count mismatch: got {len(results)} results "
+            f"for {len(sequence)} sequence steps"
+        )
         return results

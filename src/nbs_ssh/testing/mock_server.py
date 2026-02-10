@@ -37,6 +37,10 @@ from asyncssh import SSHKey
 
 from nbs_ssh.events import Event, EventCollector, EventType
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class MockServerConfig:
@@ -257,6 +261,10 @@ class MockSSHServerProtocol(asyncssh.SSHServer):
                 try:
                     auth_key = asyncssh.import_public_key(authorized_key)
                 except asyncssh.KeyImportError:
+                    logger.warning(
+                        "Failed to import authorized key: %r",
+                        authorized_key,
+                    )
                     continue
             else:
                 auth_key = authorized_key
@@ -591,6 +599,7 @@ async def _handle_shell_session(
                     except (asyncssh.BreakReceived, asyncssh.TerminalSizeChanged):
                         pass
                     except Exception:
+                        logger.debug("forward_stdin: stream error", exc_info=True)
                         break
 
             async def forward_stdout() -> None:
@@ -604,6 +613,7 @@ async def _handle_shell_session(
                             break
                         process.stdout.write(data.decode("utf-8", errors="replace"))
                     except Exception:
+                        logger.debug("forward_stdout: stream error", exc_info=True)
                         break
 
             async def forward_stderr() -> None:
@@ -617,6 +627,7 @@ async def _handle_shell_session(
                             break
                         process.stderr.write(data.decode("utf-8", errors="replace"))
                     except Exception:
+                        logger.debug("forward_stderr: stream error", exc_info=True)
                         break
 
             # Run all forwarding tasks
@@ -672,7 +683,8 @@ async def _handle_shell_session(
 
                 except (asyncssh.BreakReceived, asyncssh.TerminalSizeChanged):
                     pass
-                except Exception:
+                except Exception as exc:
+                    emitter.emit("SERVER_SHELL_ERROR", error=str(exc))
                     break
 
     except Exception as e:
@@ -738,6 +750,9 @@ class MockServerEventEmitter:
             # Create Event objects for collection
             # Note: We use the raw event_type which may not be in EventType enum
             # This is intentional - server events are distinct from client events
+            # Coupling: accessing private _events list on EventCollector.
+            # MockServerEventEmitter is tightly coupled to EventCollector by design;
+            # server-side events use _MockEvent (not the client Event type).
             self._collector._events.append(
                 _MockEvent(event_type=event_type, timestamp=timestamp_ms, data=data)
             )
@@ -824,6 +839,8 @@ class MockSSHServer:
     @property
     def events(self) -> list:
         """Return collected events."""
+        # Coupling: accessing private _events on EventCollector.
+        # See MockServerEventEmitter.emit() for rationale.
         return self._event_collector._events
 
     @property
@@ -861,6 +878,14 @@ class MockSSHServer:
                 f.write(key_data)
             self._host_key_path = Path(path)
 
+            # Postcondition: host key file exists and is non-empty
+            assert self._host_key_path.exists(), (
+                f"Host key file was not created at {self._host_key_path}"
+            )
+            assert self._host_key_path.stat().st_size > 0, (
+                f"Host key file is empty at {self._host_key_path}"
+            )
+
         # Build server options
         server_options: dict[str, Any] = {
             "server_host_keys": [str(self._host_key_path)],
@@ -886,6 +911,9 @@ class MockSSHServer:
         )
 
         # Get assigned port
+        assert self._server.sockets, (
+            "Server started but has no listening sockets"
+        )
         self._port = self._server.sockets[0].getsockname()[1]
 
         self._emitter.emit(
@@ -926,7 +954,11 @@ class MockSSHServer:
             try:
                 os.unlink(self._temp_key_file)
             except OSError:
-                pass
+                logger.warning(
+                    "Failed to clean up temporary host key: %s",
+                    self._temp_key_file,
+                    exc_info=True,
+                )
             self._temp_key_file = None
 
         self._emitter.emit("SERVER_STOP", port=self._port)

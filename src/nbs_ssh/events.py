@@ -78,6 +78,8 @@ class Event:
     @classmethod
     def from_json(cls, json_str: str) -> "Event":
         """Deserialise event from JSON string."""
+        assert isinstance(json_str, str) and json_str.strip(), \
+            f"json_str must be a non-empty string, got {json_str!r}"
         data = json.loads(json_str)
         return cls(
             event_type=data["event_type"],
@@ -89,8 +91,6 @@ class Event:
 class EventCollector:
     """
     Collects events in memory for testing and inspection.
-
-    Thread-safe for async usage.
     """
 
     def __init__(self) -> None:
@@ -128,6 +128,8 @@ class JSONLEventWriter:
     """
 
     def __init__(self, path: Path | str) -> None:
+        assert str(path).strip(), \
+            f"path must be non-empty, got {path!r}"
         self._path = Path(path)
         self._file: IO[str] | None = None
 
@@ -135,6 +137,9 @@ class JSONLEventWriter:
         """Open the log file for writing."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self._path, "a", encoding="utf-8")
+        # Postcondition: file handle must be valid after open
+        assert self._file is not None, \
+            f"Failed to open file at {self._path}"
 
     def close(self) -> None:
         """Close the log file."""
@@ -245,7 +250,8 @@ def read_jsonl_events(path: Path | str) -> list[Event]:
         List of Event objects
     """
     path = Path(path)
-    assert path.exists(), f"JSONL file not found: {path}"
+    if not path.exists():
+        raise FileNotFoundError(f"JSONL file not found: {path}")
 
     events = []
     with open(path, "r", encoding="utf-8") as f:

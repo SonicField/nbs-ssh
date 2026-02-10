@@ -109,12 +109,23 @@ class EscapeHandler:
                               connections. Called when ~# is typed.
             output_stream: Stream for local output (default: sys.stderr).
         """
+        # Precondition: escape_char must be a str
+        assert isinstance(escape_char, str), (
+            f"escape_char must be a str, got {type(escape_char).__name__}. "
+            f"Check the caller is not passing bytes or another type."
+        )
+
         # Normalise escape char
         if escape_char.lower() == "none" or escape_char == "":
             self._escape_char: bytes = b""  # Disabled
         elif escape_char.startswith("^") and len(escape_char) == 2:
             # Control character notation (e.g., ^A = 0x01)
-            ctrl_char = ord(escape_char[1].upper()) - ord("A") + 1
+            ctrl_letter = escape_char[1].upper()
+            assert "A" <= ctrl_letter <= "Z", (
+                f"Control character letter must be A-Z, got {ctrl_letter!r}. "
+                f"Valid range is ^A (0x01) through ^Z (0x1a)."
+            )
+            ctrl_char = ord(ctrl_letter) - ord("A") + 1
             self._escape_char = bytes([ctrl_char])
         else:
             self._escape_char = escape_char.encode("utf-8")[:1]
@@ -154,6 +165,13 @@ class EscapeHandler:
             DisconnectRequested: When ~. is entered
             SuspendRequested: When ~^Z is entered
         """
+        # Precondition: data must be non-empty bytes
+        assert isinstance(data, bytes) and len(data) > 0, (
+            f"data must be non-empty bytes, got {type(data).__name__}"
+            f"{f' of length {len(data)}' if isinstance(data, bytes) else ''}. "
+            f"Empty input should be filtered before reaching the escape handler."
+        )
+
         if not self.enabled:
             # Escape sequences disabled - pass through everything
             return data
@@ -188,6 +206,13 @@ class EscapeHandler:
             DisconnectRequested: When ~. is entered
             SuspendRequested: When ~^Z is entered
         """
+        # Precondition: char must be exactly one byte
+        assert isinstance(char, bytes) and len(char) == 1, (
+            f"char must be a single byte, got {type(char).__name__}"
+            f"{f' of length {len(char)}' if isinstance(char, bytes) else ''}. "
+            f"Escape handler expects byte-at-a-time input after escape character."
+        )
+
         # After handling, we're no longer at line start (unless this was newline)
         self._at_line_start = char in (b"\n", b"\r")
 
@@ -245,6 +270,15 @@ class EscapeHandler:
             self._output.write(message)
             self._output.flush()
         except (OSError, AttributeError):
+            # Best-effort output: escape handler messages (help text, forward
+            # listings) are informational only. If the output stream is broken
+            # (OSError — e.g. stderr closed/redirected) or missing the write/
+            # flush interface (AttributeError — e.g. a mock or None that
+            # slipped past __init__), suppressing the error is correct because:
+            # 1. The escape action itself (disconnect, suspend, passthrough)
+            #    still takes effect regardless of display failure.
+            # 2. Raising here would abort the SSH session over a cosmetic
+            #    failure, which is worse than a missing help message.
             pass
 
     def reset(self) -> None:
@@ -271,6 +305,12 @@ def parse_escape_char(value: str) -> str:
     Raises:
         ValueError: If value is invalid
     """
+    # Precondition: value must be a str
+    assert isinstance(value, str), (
+        f"value must be a str, got {type(value).__name__}. "
+        f"This function parses CLI string arguments, not {type(value).__name__}."
+    )
+
     if value.lower() == "none":
         return "none"
 

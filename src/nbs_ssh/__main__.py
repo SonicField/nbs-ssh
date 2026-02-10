@@ -315,22 +315,32 @@ def parse_local_forward(spec: str) -> tuple[str | None, int, str, int]:
     Raises:
         ValueError: If spec format is invalid
     """
+    def _to_port(value: str, role: str) -> int:
+        """Convert string to port number with contextual error."""
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(
+                f"Invalid {role} in forward spec {spec!r}: "
+                f"{value!r} is not a valid port number"
+            ) from None
+
     # Handle IPv6 addresses in brackets
     # Pattern: [bind_addr]:port:host:hostport or port:host:hostport
     ipv6_pattern = r'^\[([^\]]+)\]:(\d+):(.+):(\d+)$'
     match = re.match(ipv6_pattern, spec)
     if match:
         bind_host, bind_port, dest_host, dest_port = match.groups()
-        return bind_host, int(bind_port), dest_host, int(dest_port)
+        return bind_host, _to_port(bind_port, "bind port"), dest_host, _to_port(dest_port, "destination port")
 
     parts = spec.split(":")
     if len(parts) == 3:
         # port:host:hostport
-        return None, int(parts[0]), parts[1], int(parts[2])
+        return None, _to_port(parts[0], "bind port"), parts[1], _to_port(parts[2], "destination port")
     elif len(parts) == 4:
         # bind_addr:port:host:hostport
         bind_host = "" if parts[0] == "*" else parts[0]
-        return bind_host, int(parts[1]), parts[2], int(parts[3])
+        return bind_host, _to_port(parts[1], "bind port"), parts[2], _to_port(parts[3], "destination port")
     else:
         raise ValueError(
             f"Invalid local forward spec: {spec!r}. "
@@ -887,12 +897,15 @@ async def run_command(args: argparse.Namespace) -> int:
     # SetEnv takes precedence over SendEnv
     env_to_send.update(set_env_vars)
 
+    # Resolve effective host key checking mode (never mutate args namespace)
+    effective_host_key_mode = getattr(args, 'strict_host_key_checking', 'ask')
+
     # In BatchMode, we fail instead of prompting
     if batch_mode:
         # Use STRICT host key policy (no prompting)
-        if getattr(args, 'strict_host_key_checking', 'ask') == 'ask':
+        if effective_host_key_mode == 'ask':
             # Override to strict in batch mode
-            args.strict_host_key_checking = 'yes'
+            effective_host_key_mode = 'yes'
 
     # Track secrets for eradication after use
     secrets_to_eradicate: list[SecureString] = []
@@ -953,9 +966,8 @@ async def run_command(args: argparse.Namespace) -> int:
                             cert_path,
                         )
             except Exception as e:
-                if verbose > 0:
-                    logger = logging.getLogger("nbs_ssh.cli")
-                    logger.info("Failed to load certificate %s: %s", cert_path, e)
+                logger = logging.getLogger("nbs_ssh.cli")
+                logger.warning("Failed to load certificate %s: %s", cert_path, e)
 
     if args.password:
         if batch_mode:
@@ -1058,9 +1070,10 @@ async def run_command(args: argparse.Namespace) -> int:
                 )
                 return 1
             # This path should not be reachable — lazy password covers non-batch
-            password = SecureString(getpass.getpass(f"Password for {username}@{host}: "))
-            secrets_to_eradicate.append(password)
-            auth_configs.append(create_password_auth(password))
+            assert False, (
+                "Unreachable: no auth methods found outside batch mode. "
+                "Lazy password auth should have been added above."
+            )
 
     # Set up event collection if --events
     event_collector = EventCollector() if args.events else None
@@ -1072,7 +1085,7 @@ async def run_command(args: argparse.Namespace) -> int:
     if args.no_host_check:
         host_key_policy = HostKeyPolicy.INSECURE
     else:
-        mode = getattr(args, 'strict_host_key_checking', 'ask')
+        mode = effective_host_key_mode
         policy_map = {
             "yes": HostKeyPolicy.STRICT,
             "ask": HostKeyPolicy.ASK,
@@ -1368,6 +1381,9 @@ async def run_command(args: argparse.Namespace) -> int:
                     await control_master_server.stop()
 
     except Exception as e:
+        logging.getLogger("nbs_ssh.cli").debug(
+            "Unhandled exception", exc_info=True
+        )
         print(f"Error: {e}", file=sys.stderr)
         exit_code = 1
 

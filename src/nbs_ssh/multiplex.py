@@ -159,6 +159,7 @@ def expand_control_path(
     try:
         local_host_fqdn = socket.getfqdn()
     except Exception:
+        logger.debug("Failed to resolve FQDN, falling back to local_host=%s", local_host)
         local_host_fqdn = local_host
 
     # Generate connection hash (simplified version of OpenSSH's %C)
@@ -234,6 +235,13 @@ class ControlMaster:
         Raises:
             OSError: If socket creation fails
         """
+        assert connection is not None, (
+            "Cannot start ControlMaster without an SSH connection"
+        )
+        assert self._server is None, (
+            f"ControlMaster already started on {self._socket_path}"
+        )
+
         self._connection = connection
         self._stopping = False
         self._closed.clear()
@@ -245,8 +253,14 @@ class ControlMaster:
         if self._socket_path.exists():
             try:
                 self._socket_path.unlink()
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError:
+                logger.warning(
+                    "Failed to unlink stale socket %s",
+                    self._socket_path,
+                    exc_info=True,
+                )
 
         # Create Unix socket server
         self._server = await asyncio.start_unix_server(
@@ -288,7 +302,11 @@ class ControlMaster:
             if self._socket_path.exists():
                 self._socket_path.unlink()
         except OSError:
-            pass
+            logger.warning(
+                "Failed to clean up socket file %s",
+                self._socket_path,
+                exc_info=True,
+            )
 
         self._closed.set()
         logger.info("ControlMaster stopped")
@@ -339,7 +357,7 @@ class ControlMaster:
             try:
                 await writer.wait_closed()
             except Exception:
-                pass
+                logger.debug("Error closing client writer", exc_info=True)
 
             self._active_clients -= 1
             self._last_client_time = time.time()
@@ -361,7 +379,9 @@ class ControlMaster:
         writer: asyncio.StreamWriter,
     ) -> None:
         """Handle a single message from client."""
-        assert self._connection is not None
+        assert self._connection is not None, (
+            "Cannot handle message: SSH connection is None (master not started)"
+        )
 
         if msg.msg_type == MessageType.HELLO:
             await self._send_message(
@@ -408,7 +428,9 @@ class ControlMaster:
         writer: asyncio.StreamWriter,
     ) -> None:
         """Handle command execution request."""
-        assert self._connection is not None
+        assert self._connection is not None, (
+            "Cannot execute command: SSH connection is None (master not started)"
+        )
 
         command = msg.data.get("command", "")
         env = msg.data.get("env")
@@ -457,7 +479,9 @@ class ControlMaster:
         writer: asyncio.StreamWriter,
     ) -> None:
         """Handle interactive shell request."""
-        assert self._connection is not None
+        assert self._connection is not None, (
+            "Cannot open shell: SSH connection is None (master not started)"
+        )
 
         term_type = msg.data.get("term_type", "xterm")
         term_width = msg.data.get("term_width", 80)
@@ -508,6 +532,7 @@ class ControlMaster:
                         data = msg.data.get("data", "")
                         process.stdin.write(data)
                 except Exception:
+                    logger.debug("Error in client->shell proxy", exc_info=True)
                     break
 
         async def read_shell() -> None:
@@ -524,6 +549,7 @@ class ControlMaster:
                     else:
                         break
                 except Exception:
+                    logger.debug("Error in shell->client proxy", exc_info=True)
                     break
 
         client_task = asyncio.create_task(read_client())
@@ -648,7 +674,7 @@ class MultiplexClient:
             try:
                 await self._writer.wait_closed()
             except Exception:
-                pass
+                logger.debug("Error closing connection to master", exc_info=True)
             self._writer = None
             self._reader = None
 
@@ -720,6 +746,8 @@ class MultiplexClient:
         Returns:
             Tuple of (stdout, stderr, exit_code)
         """
+        assert command, "Cannot execute empty command via multiplex"
+
         if not await self.connect():
             raise ConnectionError(f"Cannot connect to master at {self._socket_path}")
 
@@ -758,13 +786,17 @@ class MultiplexClient:
 
     async def _send_message(self, msg: ControlMessage) -> None:
         """Send a message to the master."""
-        assert self._writer is not None
+        assert self._writer is not None, (
+            "Cannot send message: not connected to master (call connect() first)"
+        )
         self._writer.write(msg.encode())
         await self._writer.drain()
 
     async def _recv_message(self) -> ControlMessage | None:
         """Receive a message from the master."""
-        assert self._reader is not None
+        assert self._reader is not None, (
+            "Cannot receive message: not connected to master (call connect() first)"
+        )
         try:
             length_data = await self._reader.readexactly(4)
             length = struct.unpack(">I", length_data)[0]

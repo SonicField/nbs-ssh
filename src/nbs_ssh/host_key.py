@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import base64
+import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -24,6 +25,8 @@ from pathlib import Path
 from typing import Callable, Any
 
 import asyncssh
+
+log = logging.getLogger("nbs_ssh.host_key")
 
 
 class HostKeyPolicy(str, Enum):
@@ -83,6 +86,11 @@ def _hash_hostname(hostname: str, salt: bytes) -> str:
     Returns:
         Hashed hostname in OpenSSH format
     """
+    assert len(salt) == 20, (
+        f"HMAC-SHA1 salt must be exactly 20 bytes, got {len(salt)}. "
+        f"Use secrets.token_bytes(20) to generate a valid salt."
+    )
+
     mac = hmac.new(salt, hostname.encode('utf-8'), hashlib.sha1)
     hash_bytes = mac.digest()
     salt_b64 = base64.b64encode(salt).decode('ascii')
@@ -239,6 +247,17 @@ class HostKeyVerifier:
             policy: Verification policy (STRICT, ASK, ACCEPT_NEW, INSECURE)
             hash_known_hosts: If True, hash hostnames when saving to known_hosts
         """
+        assert isinstance(known_hosts_paths, list), (
+            f"known_hosts_paths must be a list of Path objects, "
+            f"got {type(known_hosts_paths).__name__}. "
+            f"Wrap a single path in a list: [path]."
+        )
+        assert isinstance(policy, HostKeyPolicy), (
+            f"policy must be a HostKeyPolicy enum member, "
+            f"got {type(policy).__name__}: {policy!r}. "
+            f"Use e.g. HostKeyPolicy.STRICT."
+        )
+
         self._known_hosts_paths = known_hosts_paths
         self._write_path = write_path
         self._policy = policy
@@ -249,6 +268,11 @@ class HostKeyVerifier:
 
         # Load known_hosts
         self._load_known_hosts()
+
+    @property
+    def policy(self) -> HostKeyPolicy:
+        """The host key verification policy."""
+        return self._policy
 
     def _load_known_hosts(self) -> None:
         """Load and parse all known_hosts files."""
@@ -279,9 +303,12 @@ class HostKeyVerifier:
                     entry = self._parse_known_hosts_line(line)
                     if entry:
                         self._entries.append(entry)
-        except (OSError, IOError):
-            # File not readable, skip silently
-            pass
+        except (OSError, IOError) as e:
+            log.warning(
+                "Failed to read known_hosts file %s: %s. "
+                "Host keys from this file will not be available for verification.",
+                path, e,
+            )
 
     def _parse_known_hosts_line(self, line: str) -> HostKeyEntry | None:
         """
@@ -339,6 +366,15 @@ class HostKeyVerifier:
         Returns:
             HostKeyResult indicating verification outcome
         """
+        assert host, (
+            "host must be a non-empty string for host key verification. "
+            "An empty host would match nothing and silently return UNKNOWN."
+        )
+        assert port > 0, (
+            f"port must be positive for host key verification, got {port}. "
+            f"Port 0 or negative would produce incorrect matching results."
+        )
+
         # Get key type - asyncssh returns bytes, decode to str
         key_type_raw = key.algorithm
         key_type = key_type_raw.decode('ascii') if isinstance(key_type_raw, bytes) else key_type_raw
@@ -391,6 +427,15 @@ class HostKeyVerifier:
         Raises:
             RuntimeError: If write_path is None or not writable
         """
+        assert host, (
+            "host must be a non-empty string for saving host key. "
+            "An empty host would create a malformed known_hosts entry."
+        )
+        assert port > 0, (
+            f"port must be positive for saving host key, got {port}. "
+            f"Port 0 or negative would create a malformed known_hosts entry."
+        )
+
         if self._write_path is None:
             raise RuntimeError("No write path configured for host key saving")
 
@@ -422,15 +467,19 @@ class HostKeyVerifier:
 
         # Also add to in-memory entries
         parts = key_line.split(None, 2)
-        if len(parts) >= 2:
-            self._entries.append(HostKeyEntry(
-                hostnames=[host_entry],
-                key_type=parts[0],
-                key_data=parts[1],
-                is_revoked=False,
-                is_hashed=is_hashed,
-                raw_line=full_line.strip(),
-            ))
+        assert len(parts) >= 2, (
+            f"Exported public key line must contain at least key_type and key_data "
+            f"separated by whitespace, got {len(parts)} part(s): {key_line!r}. "
+            f"This indicates a malformed key export from asyncssh."
+        )
+        self._entries.append(HostKeyEntry(
+            hostnames=[host_entry],
+            key_type=parts[0],
+            key_data=parts[1],
+            is_revoked=False,
+            is_hashed=is_hashed,
+            raw_line=full_line.strip(),
+        ))
 
     def get_stored_fingerprints(
         self,
@@ -460,8 +509,12 @@ class HostKeyVerifier:
                         digest = hashlib.sha256(key_bytes).digest()
                         b64 = base64.b64encode(digest).decode('ascii').rstrip('=')
                         fingerprints.append((entry.key_type, f"SHA256:{b64}"))
-                    except (ValueError, base64.binascii.Error):
-                        pass
+                    except (ValueError, base64.binascii.Error) as e:
+                        log.warning(
+                            "Corrupted key data for host pattern %r "
+                            "(key_type=%s): %s. Skipping fingerprint.",
+                            pattern, entry.key_type, e,
+                        )
                     break
 
         return fingerprints
@@ -569,7 +622,7 @@ class HostKeyCapturingClient(asyncssh.SSHClient):
 
         elif result == HostKeyResult.UNKNOWN:
             # Handle based on policy
-            policy = self._verifier._policy
+            policy = self._verifier.policy
 
             if policy == HostKeyPolicy.INSECURE:
                 return True
@@ -581,8 +634,18 @@ class HostKeyCapturingClient(asyncssh.SSHClient):
                 if self._on_unknown:
                     return self._on_unknown(check_host, check_port, key)
                 return False
+            else:
+                assert False, (
+                    f"Unhandled HostKeyPolicy variant: {policy!r}. "
+                    f"A new policy was added to HostKeyPolicy without updating "
+                    f"HostKeyCapturingClient.validate_host_public_key."
+                )
 
-        return False
+        assert False, (
+            f"Unhandled HostKeyResult variant: {result!r}. "
+            f"A new result was added to HostKeyResult without updating "
+            f"HostKeyCapturingClient.validate_host_public_key."
+        )
 
 
 class HostKeyChangedError(Exception):

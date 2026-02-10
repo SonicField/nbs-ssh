@@ -685,3 +685,338 @@ async def test_connection_with_ask_policy_callback() -> None:
 
     assert callback_called
     assert received_host == "localhost"
+
+
+# ============================================================================
+# Adversarial tests for engineering standards violations
+# ============================================================================
+
+import logging
+
+from nbs_ssh.host_key import HostKeyCapturingClient
+
+
+class TestViolation1SilentErrorSwallowingLoadKnownHosts:
+    """Violation 1: Lines 282-284 — silent error swallowing on known_hosts load.
+
+    _parse_known_hosts_file catches OSError/IOError and passes silently.
+    A corrupted or permission-denied known_hosts file should log a warning.
+    """
+
+    def test_unreadable_known_hosts_logs_warning(self, tmp_path, caplog) -> None:
+        """Permission-denied known_hosts must log a warning, not fail silently."""
+        known_hosts = tmp_path / "known_hosts"
+        known_hosts.write_text("example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey\n")
+        known_hosts.chmod(0o000)
+
+        with caplog.at_level(logging.WARNING, logger="nbs_ssh.host_key"):
+            verifier = HostKeyVerifier(
+                known_hosts_paths=[known_hosts],
+                write_path=None,
+                policy=HostKeyPolicy.STRICT,
+            )
+
+        # Should have logged a warning about the file
+        assert len(caplog.records) >= 1, "Expected a warning log for unreadable known_hosts"
+        assert "known_hosts" in caplog.text.lower() or str(known_hosts) in caplog.text
+
+        # Restore permissions for cleanup
+        known_hosts.chmod(0o644)
+
+
+class TestViolation2SilentErrorSwallowingGetStoredFingerprints:
+    """Violation 2: Lines 463-464 — silent error swallowing in get_stored_fingerprints.
+
+    Corrupted base64 key data is silently skipped. Should log the corrupted entry.
+    """
+
+    def test_corrupted_key_data_logs_warning(self, tmp_path, caplog) -> None:
+        """Corrupted base64 key data in known_hosts should log a warning."""
+        known_hosts = tmp_path / "known_hosts"
+        # Write an entry with invalid base64 key data
+        known_hosts.write_text("example.com ssh-ed25519 NOT_VALID_BASE64!!!\n")
+
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[known_hosts],
+            write_path=None,
+            policy=HostKeyPolicy.STRICT,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="nbs_ssh.host_key"):
+            fingerprints = verifier.get_stored_fingerprints("example.com", 22)
+
+        assert len(fingerprints) == 0
+        assert len(caplog.records) >= 1, "Expected a warning log for corrupted key data"
+
+
+class TestViolation3MissingPreconditionsInit:
+    """Violation 3: Lines 226-251 — missing preconditions on HostKeyVerifier.__init__.
+
+    known_hosts_paths should be validated as a list, policy as HostKeyPolicy.
+    """
+
+    def test_known_hosts_paths_not_list_raises(self) -> None:
+        """Passing a non-list for known_hosts_paths must raise AssertionError."""
+        with pytest.raises(AssertionError):
+            HostKeyVerifier(
+                known_hosts_paths="/etc/ssh/known_hosts",  # type: ignore
+                write_path=None,
+                policy=HostKeyPolicy.STRICT,
+            )
+
+    def test_policy_not_host_key_policy_raises(self) -> None:
+        """Passing a non-HostKeyPolicy for policy must raise AssertionError."""
+        with pytest.raises(AssertionError):
+            HostKeyVerifier(
+                known_hosts_paths=[],
+                write_path=None,
+                policy="strict",  # type: ignore
+            )
+
+
+class TestViolation4MissingPreconditionsCheckHostKey:
+    """Violation 4: Lines 325-346 — missing preconditions on check_host_key.
+
+    Empty host or port <= 0 produces silent wrong result. SECURITY.
+    """
+
+    def _make_mock_key(self, key_type: str = "ssh-ed25519",
+                       key_data: str = "AAAAC3NzaC1lZDI1NTE5AAAAITestKey"):
+        class MockSSHKey:
+            def __init__(self, kt, kd):
+                self._kt = kt
+                self._kd = kd
+
+            @property
+            def algorithm(self):
+                return self._kt.encode('ascii')
+
+            @property
+            def public_data(self):
+                return base64.b64decode(self._kd)
+
+        return MockSSHKey(key_type, key_data)
+
+    def test_empty_host_raises(self, tmp_path) -> None:
+        """Empty host string must raise AssertionError."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=None,
+            policy=HostKeyPolicy.STRICT,
+        )
+        key = self._make_mock_key()
+        with pytest.raises(AssertionError):
+            verifier.check_host_key("", 22, key)
+
+    def test_zero_port_raises(self, tmp_path) -> None:
+        """Port 0 must raise AssertionError."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=None,
+            policy=HostKeyPolicy.STRICT,
+        )
+        key = self._make_mock_key()
+        with pytest.raises(AssertionError):
+            verifier.check_host_key("example.com", 0, key)
+
+    def test_negative_port_raises(self, tmp_path) -> None:
+        """Negative port must raise AssertionError."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=None,
+            policy=HostKeyPolicy.STRICT,
+        )
+        key = self._make_mock_key()
+        with pytest.raises(AssertionError):
+            verifier.check_host_key("example.com", -1, key)
+
+
+class TestViolation5MissingPreconditionsSaveHostKey:
+    """Violation 5: Lines 377-421 — missing preconditions on save_host_key.
+
+    Empty host or port <= 0 produces silent wrong result. SECURITY.
+    """
+
+    def _make_mock_key(self, key_type: str = "ssh-ed25519",
+                       key_data: str = "AAAAC3NzaC1lZDI1NTE5AAAAITestKey"):
+        class MockSSHKey:
+            def __init__(self, kt, kd):
+                self._kt = kt
+                self._kd = kd
+
+            @property
+            def algorithm(self):
+                return self._kt.encode('ascii')
+
+            @property
+            def public_data(self):
+                return base64.b64decode(self._kd)
+
+            def export_public_key(self, fmt):
+                return f"{self._kt} {self._kd}".encode()
+
+        return MockSSHKey(key_type, key_data)
+
+    def test_empty_host_raises(self, tmp_path) -> None:
+        """Empty host string must raise AssertionError."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=tmp_path / "known_hosts",
+            policy=HostKeyPolicy.ACCEPT_NEW,
+        )
+        key = self._make_mock_key()
+        with pytest.raises(AssertionError):
+            verifier.save_host_key("", 22, key)
+
+    def test_zero_port_raises(self, tmp_path) -> None:
+        """Port 0 must raise AssertionError."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=tmp_path / "known_hosts",
+            policy=HostKeyPolicy.ACCEPT_NEW,
+        )
+        key = self._make_mock_key()
+        with pytest.raises(AssertionError):
+            verifier.save_host_key("example.com", 0, key)
+
+    def test_negative_port_raises(self, tmp_path) -> None:
+        """Negative port must raise AssertionError."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=tmp_path / "known_hosts",
+            policy=HostKeyPolicy.ACCEPT_NEW,
+        )
+        key = self._make_mock_key()
+        with pytest.raises(AssertionError):
+            verifier.save_host_key("example.com", -1, key)
+
+
+class TestViolation6MissingPreconditionHashHostname:
+    """Violation 6: Lines 72-90 — missing precondition on _hash_hostname.
+
+    Salt length not checked. HMAC-SHA1 requires 20-byte salt.
+    """
+
+    def test_short_salt_raises(self) -> None:
+        """Salt shorter than 20 bytes must raise AssertionError."""
+        with pytest.raises(AssertionError):
+            _hash_hostname("example.com", b"short")
+
+    def test_long_salt_raises(self) -> None:
+        """Salt longer than 20 bytes must raise AssertionError."""
+        with pytest.raises(AssertionError):
+            _hash_hostname("example.com", b"x" * 32)
+
+    def test_empty_salt_raises(self) -> None:
+        """Empty salt must raise AssertionError."""
+        with pytest.raises(AssertionError):
+            _hash_hostname("example.com", b"")
+
+    def test_correct_salt_length_succeeds(self) -> None:
+        """20-byte salt must succeed."""
+        result = _hash_hostname("example.com", b"x" * 20)
+        assert result.startswith("|1|")
+
+
+class TestViolation7SilentFallthroughValidateHostPublicKey:
+    """Violation 7: Lines 525-585 — silent fallthrough on unhandled result/policy.
+
+    The final `return False` in validate_host_public_key silently drops
+    through if HostKeyResult or HostKeyPolicy gains a new variant.
+    Should be an assertion failure instead.
+    """
+
+    def test_unhandled_result_raises(self) -> None:
+        """Unrecognised HostKeyResult must raise AssertionError, not silently return False."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=None,
+            policy=HostKeyPolicy.STRICT,
+        )
+        client = HostKeyCapturingClient(verifier)
+
+        # Monkeypatch check_host_key to return a bogus result
+        verifier.check_host_key = lambda h, p, k: "BOGUS_RESULT"  # type: ignore
+
+        class FakeKey:
+            public_data = b"fake"
+            algorithm = b"ssh-ed25519"
+
+        with pytest.raises(AssertionError):
+            client.validate_host_public_key("host", ("1.2.3.4", 22), 22, FakeKey())
+
+    def test_unhandled_policy_raises(self) -> None:
+        """Unrecognised HostKeyPolicy must raise AssertionError, not silently return False."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=None,
+            policy=HostKeyPolicy.STRICT,
+        )
+        client = HostKeyCapturingClient(verifier)
+
+        # Monkeypatch check_host_key to return UNKNOWN
+        verifier.check_host_key = lambda h, p, k: HostKeyResult.UNKNOWN  # type: ignore
+        # Monkeypatch policy to something unrecognised
+        verifier._policy = "BOGUS_POLICY"  # type: ignore
+
+        class FakeKey:
+            public_data = b"fake"
+            algorithm = b"ssh-ed25519"
+
+        with pytest.raises(AssertionError):
+            client.validate_host_public_key("host", ("1.2.3.4", 22), 22, FakeKey())
+
+
+class TestViolation8SilentNonAdditionOnBadKeyLine:
+    """Violation 8: Line 425 — silent non-addition when key line doesn't split.
+
+    If key.export_public_key() returns malformed data, the entry is silently
+    not added to _entries. Should assert that the key line splits properly.
+    """
+
+    def test_malformed_key_export_raises(self, tmp_path) -> None:
+        """If export_public_key returns a string without space, save_host_key must assert."""
+
+        class BadKey:
+            algorithm = b"ssh-ed25519"
+            public_data = b"fake"
+
+            def export_public_key(self, fmt):
+                return b"no-spaces-here"
+
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=tmp_path / "known_hosts",
+            policy=HostKeyPolicy.ACCEPT_NEW,
+        )
+
+        with pytest.raises(AssertionError):
+            verifier.save_host_key("example.com", 22, BadKey())  # type: ignore
+
+
+class TestViolation9AccessingPrivatePolicy:
+    """Violation 9: Line 572 — accessing private _verifier._policy.
+
+    HostKeyCapturingClient accesses _verifier._policy directly.
+    Should be exposed as a public property on HostKeyVerifier.
+    """
+
+    def test_policy_property_exists(self) -> None:
+        """HostKeyVerifier must expose policy as a public property."""
+        verifier = HostKeyVerifier(
+            known_hosts_paths=[],
+            write_path=None,
+            policy=HostKeyPolicy.STRICT,
+        )
+        # Access via public property, not _policy
+        assert verifier.policy == HostKeyPolicy.STRICT
+
+    def test_policy_property_returns_correct_value(self) -> None:
+        """Public policy property must return the configured policy."""
+        for p in HostKeyPolicy:
+            verifier = HostKeyVerifier(
+                known_hosts_paths=[],
+                write_path=None,
+                policy=p,
+            )
+            assert verifier.policy == p

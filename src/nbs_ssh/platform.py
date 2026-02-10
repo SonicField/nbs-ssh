@@ -9,9 +9,12 @@ Provides:
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
+
+log = logging.getLogger("nbs_ssh.platform")
 
 
 def is_windows() -> bool:
@@ -30,16 +33,29 @@ def get_ssh_dir() -> Path:
         # Windows: use USERPROFILE
         userprofile = os.environ.get("USERPROFILE")
         if userprofile:
-            return Path(userprofile) / ".ssh"
-        # Fallback to HOME if USERPROFILE not set
-        home = os.environ.get("HOME")
-        if home:
-            return Path(home) / ".ssh"
-        # Last resort: expanduser
-        return Path.home() / ".ssh"
+            result = Path(userprofile) / ".ssh"
+        else:
+            # Fallback to HOME if USERPROFILE not set
+            home = os.environ.get("HOME")
+            if home:
+                result = Path(home) / ".ssh"
+            else:
+                # Last resort: expanduser
+                result = Path.home() / ".ssh"
     else:
         # Unix: use HOME or expanduser
-        return Path.home() / ".ssh"
+        result = Path.home() / ".ssh"
+
+    # On Unix, a Windows-style path (e.g. C:\Users\X) won't pass
+    # Path.is_absolute(), so also accept drive-letter-rooted paths.
+    result_str = str(result)
+    is_abs = result.is_absolute() or (
+        len(result_str) >= 2 and result_str[1] == ":"
+    )
+    assert is_abs, (
+        f"get_ssh_dir must return an absolute path, got {result}"
+    )
+    return result
 
 
 def get_known_hosts_path() -> Path:
@@ -191,9 +207,8 @@ def parse_ssh_config_identity_files(
                     # Expand ~ and environment variables
                     expanded = expand_path(path_str)
                     identity_files.append(expanded)
-    except (OSError, IOError):
-        # Config file not readable, skip silently
-        pass
+    except (OSError, IOError) as exc:
+        log.warning("Failed to read SSH config %s: %s", config_path, exc)
 
     return identity_files
 
@@ -282,6 +297,10 @@ def expand_path(path: str | Path) -> Path:
     Returns:
         Expanded Path object
     """
+    assert str(path).strip(), (
+        "expand_path requires a non-empty path string"
+    )
+
     path_str = str(path)
 
     # Handle Windows %VAR% syntax
@@ -312,6 +331,10 @@ def validate_path(path: Path, description: str = "path") -> tuple[bool, str | No
         Tuple of (is_valid, error_message)
         error_message is None if valid
     """
+    assert path is not None, (
+        f"validate_path requires a Path, got None for {description}"
+    )
+
     # Check Windows long path limit
     if is_windows():
         # Windows MAX_PATH is 260, but some APIs handle up to 32767 with \\?\ prefix
@@ -415,8 +438,8 @@ def get_pageant_available() -> bool:
 
         hwnd = FindWindowW("Pageant", "Pageant")
         return hwnd != 0
-    except (ImportError, AttributeError, OSError):
-        # ctypes not available or not on Windows
+    except (ImportError, AttributeError, OSError) as exc:
+        log.debug("Pageant check unavailable: %s", exc)
         return False
 
 
@@ -463,7 +486,8 @@ def _check_windows_openssh_agent() -> bool:
         )
         # Look for "STATE" and "RUNNING" in output
         return "RUNNING" in result.stdout
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        log.debug("Windows OpenSSH agent check failed: %s", exc)
         return False
 
 

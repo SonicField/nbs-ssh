@@ -178,8 +178,8 @@ class StreamExecResult:
         except asyncio.TimeoutError:
             # Force kill if terminate didn't work
             self._process.kill()
-        except Exception:
-            pass  # Process may already be gone
+        except Exception as e:
+            log.debug("process cleanup error (process may already be gone): %s", e)
 
     def __aiter__(self) -> AsyncIterator[StreamEvent]:
         return self
@@ -760,6 +760,11 @@ class SSHConnection:
             **connect_data,
         )
 
+        # Postcondition: connection must be established
+        assert self._conn is not None, (
+            "Postcondition violated: _connect completed without setting self._conn"
+        )
+
     async def _try_auth_method(self, auth_config: AuthConfig) -> None:
         """Try a single authentication method."""
         options: dict[str, Any] = {
@@ -874,7 +879,7 @@ class SSHConnection:
             options["client_keys"] = []
 
         elif auth_config.method == AuthMethod.PRIVATE_KEY:
-            assert auth_config.key_path is not None
+            assert auth_config.key_path is not None, "PRIVATE_KEY auth method requires key_path to be set"
             log.debug("Loading private key: %s", auth_config.key_path)
             key = load_private_key(auth_config.key_path, _reveal(auth_config.passphrase))
             options["client_keys"] = [key]
@@ -913,7 +918,7 @@ class SSHConnection:
             options["password"] = None
 
         elif auth_config.method == AuthMethod.PKCS11:
-            assert auth_config.pkcs11_provider is not None
+            assert auth_config.pkcs11_provider is not None, "PKCS11 auth method requires pkcs11_provider to be set"
             pkcs11_keys = load_pkcs11_keys(
                 provider=auth_config.pkcs11_provider,
                 pin=_reveal(auth_config.pkcs11_pin),
@@ -1091,6 +1096,11 @@ class SSHConnection:
         Returns:
             ExecResult with stdout, stderr, and exit_code
         """
+        # Precondition: command must be non-empty
+        assert command and command.strip(), (
+            f"Command must be a non-empty string, got {command!r}"
+        )
+
         # Precondition: connected
         assert self._conn is not None, "Not connected. Use async with SSHConnection(...):"
 
@@ -1145,6 +1155,11 @@ class SSHConnection:
                 elif event.stream == "exit":
                     print(f"Exited with code {event.exit_code}")
         """
+        # Precondition: command must be non-empty
+        assert command and command.strip(), (
+            f"Command must be a non-empty string, got {command!r}"
+        )
+
         # Precondition: connected
         assert self._conn is not None, "Not connected. Use async with SSHConnection(...):"
 
@@ -1316,7 +1331,10 @@ class SSHConnection:
                         # EOF on stdin
                         process.stdin.write_eof()
                         break
-                except (OSError, asyncio.CancelledError):
+                except asyncio.CancelledError:
+                    break
+                except OSError as e:
+                    log.debug("stdin read error (fd may be closed): %s", e)
                     break
 
         async def read_remote() -> None:
@@ -1343,8 +1361,8 @@ class SSHConnection:
                 try:
                     term_size = os.get_terminal_size()
                     process.change_terminal_size(term_size.columns, term_size.lines)
-                except OSError:
-                    pass
+                except OSError as e:
+                    log.debug("terminal resize failed (terminal may be detached): %s", e)
 
         # Start all tasks
         stdin_task = asyncio.create_task(read_stdin())
@@ -1387,7 +1405,7 @@ class SSHConnection:
         import ctypes
         import msvcrt
 
-        assert self._conn is not None
+        assert self._conn is not None, "Not connected. Use async with SSHConnection(...):"
 
         # Windows Console API constants
         STD_INPUT_HANDLE = -10
@@ -1549,8 +1567,13 @@ class SSHConnection:
 
         # Get events from collector if available
         events: list = []
-        if self._emitter._collector:
-            events = list(self._emitter._collector.events)
+        _sentinel = object()
+        collector = getattr(self._emitter, "_collector", _sentinel)
+        assert collector is not _sentinel, (
+            "EventEmitter._collector attribute not found — internal API may have changed"
+        )
+        if collector is not None:
+            events = list(collector.events)
 
         # Extract algorithm info from AsyncSSH connection
         algorithms = AlgorithmInfo.from_asyncssh_conn(self._conn)

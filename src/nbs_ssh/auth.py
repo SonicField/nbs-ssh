@@ -9,6 +9,7 @@ Provides:
 from __future__ import annotations
 
 import os
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -19,6 +20,8 @@ import asyncssh
 from nbs_ssh.errors import AgentError, CertificateError, ErrorContext, KeyLoadError
 from nbs_ssh.platform import expand_path, get_agent_available, get_openssh_agent_available
 from nbs_ssh.secure_string import SecureString
+
+logger = logging.getLogger(__name__)
 
 
 class AuthMethod(str, Enum):
@@ -206,6 +209,10 @@ def load_private_key(
     Raises:
         KeyLoadError: If key cannot be loaded (file not found, bad format, wrong passphrase)
     """
+    assert key_path is not None and str(key_path).strip(), (
+        "key_path must be a non-empty path, "
+        f"got {key_path!r}"
+    )
     key_path = expand_path(key_path)
 
     # Check file exists
@@ -230,7 +237,11 @@ def load_private_key(
         passphrase_str = passphrase.reveal() if isinstance(passphrase, SecureString) else passphrase
 
     try:
-        return asyncssh.read_private_key(str(key_path), passphrase=passphrase_str)
+        result = asyncssh.read_private_key(str(key_path), passphrase=passphrase_str)
+        assert result is not None, (
+            f"asyncssh.read_private_key returned None for {key_path}"
+        )
+        return result
     except asyncssh.KeyImportError as e:
         error_msg = str(e).lower()
         if "passphrase" in error_msg or "decrypt" in error_msg:
@@ -274,6 +285,10 @@ def load_certificate(
         CertificateError: If certificate cannot be loaded (file not found,
                          bad format, expired)
     """
+    assert cert_path is not None and str(cert_path).strip(), (
+        "cert_path must be a non-empty path, "
+        f"got {cert_path!r}"
+    )
     cert_path = expand_path(cert_path)
 
     # Check file exists
@@ -293,7 +308,11 @@ def load_certificate(
         )
 
     try:
-        return asyncssh.read_certificate(str(cert_path))
+        result = asyncssh.read_certificate(str(cert_path))
+        assert result is not None, (
+            f"asyncssh.read_certificate returned None for {cert_path}"
+        )
+        return result
     except asyncssh.KeyImportError as e:
         error_msg = str(e).lower()
         if "expired" in error_msg:
@@ -426,7 +445,7 @@ async def get_agent_cert_key_pair(
                 key_pair = asyncssh.load_keypairs(key)[0]
                 key_pair.set_certificate(cert)
                 return key_pair
-            except (KeyLoadError, Exception):
+            except KeyLoadError:
                 pass  # Fall through to agent-based approach
 
     # Fallback: try agent-based signing with the cert's public key
@@ -450,7 +469,13 @@ async def get_agent_cert_key_pair(
         )
         key_pair.set_certificate(cert)
         return key_pair
-    except Exception:
+    except (asyncssh.ChannelOpenError, OSError):
+        return None
+    except Exception as e:
+        logger.warning(
+            "Unexpected error connecting to SSH agent at %s: %s",
+            sock_path, e,
+        )
         return None
 
 
@@ -661,7 +686,10 @@ def check_gssapi_available() -> bool:
             # Try to acquire default credentials
             creds = gssapi.Credentials(usage="initiate")
             return creds.lifetime > 0
-        except Exception:
+        except ImportError:
+            return False
+        except Exception as e:
+            logger.debug("GSSAPI credential check failed: %s", e)
             return False
 
 

@@ -9,6 +9,7 @@ Provides SecureString class that:
 """
 import ctypes
 import os
+import warnings
 from typing import Any
 
 
@@ -45,6 +46,12 @@ class SecureString:
         Args:
             value: The secret value to store securely
         """
+        # Precondition: value must be str or bytes
+        assert isinstance(value, (str, bytes)), (
+            f"SecureString requires str or bytes, got {type(value).__name__}. "
+            f"Ensure the secret value is a string or bytes object."
+        )
+
         # Convert to bytes if string
         if isinstance(value, str):
             data = value.encode('utf-8')
@@ -59,6 +66,12 @@ class SecureString:
 
         # Copy data into our controlled buffer
         ctypes.memmove(self._buffer, data, self._length)
+
+        # Postcondition: buffer contents must match the source data
+        assert bytes(self._buffer) == data, (
+            "SecureString buffer contents do not match source data after copy. "
+            "ctypes.memmove may have failed or buffer was incorrectly allocated."
+        )
 
     def _check_eradicated(self) -> None:
         """Raise if the string has been eradicated."""
@@ -103,7 +116,13 @@ class SecureString:
             SecureStringEradicated: If the string has been eradicated
         """
         self._check_eradicated()
-        return bytes(self._buffer).decode('utf-8')
+        result = bytes(self._buffer).decode('utf-8')
+        # Postcondition: revealed data length must match stored length
+        assert len(result.encode('utf-8')) == self._length, (
+            f"Revealed string encodes to {len(result.encode('utf-8'))} bytes "
+            f"but expected {self._length}. Buffer may be corrupted."
+        )
+        return result
 
     def reveal_bytes(self) -> bytes:
         """
@@ -119,7 +138,13 @@ class SecureString:
             SecureStringEradicated: If the string has been eradicated
         """
         self._check_eradicated()
-        return bytes(self._buffer)
+        result = bytes(self._buffer)
+        # Postcondition: revealed bytes length must match stored length
+        assert len(result) == self._length, (
+            f"Revealed bytes length {len(result)} does not match "
+            f"expected length {self._length}. Buffer may be corrupted."
+        )
+        return result
 
     def __repr__(self) -> str:
         """Return a safe representation that never reveals the secret."""
@@ -170,6 +195,13 @@ class SecureString:
             # os.urandom uses CryptGenRandom on Windows, /dev/urandom on Unix
             random_bytes = os.urandom(self._length)
             ctypes.memmove(self._buffer, random_bytes, self._length)
+
+            # Postcondition: buffer must contain the random bytes, not original data
+            assert bytes(self._buffer) == random_bytes, (
+                "Eradication failed: buffer contents do not match overwrite bytes. "
+                "Secret data may not have been destroyed."
+            )
+
             self._eradicated = True
 
     @property
@@ -181,5 +213,9 @@ class SecureString:
         """Eradicate on garbage collection as a safety net."""
         try:
             self.eradicate()
-        except Exception:
-            pass  # Don't raise in __del__
+        except Exception as e:
+            warnings.warn(
+                f"SecureString.__del__ failed to eradicate: {e}",
+                RuntimeWarning,
+                stacklevel=1,
+            )

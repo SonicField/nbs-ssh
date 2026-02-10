@@ -12,6 +12,7 @@ on transient failures with exponential backoff.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 from dataclasses import dataclass, field
@@ -32,6 +33,9 @@ from nbs_ssh.errors import (
 from nbs_ssh.events import EventCollector, EventEmitter, EventType
 from nbs_ssh.forwarding import ForwardHandle, ForwardManager
 from nbs_ssh.keepalive import KeepaliveConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionState(str, Enum):
@@ -303,6 +307,8 @@ class SSHSupervisor:
 
     async def _ensure_connected(self) -> None:
         """Ensure the supervisor is connected, waiting if necessary."""
+        assert not self._closed,             "_ensure_connected precondition: supervisor is closed"
+
         if self._state == ConnectionState.FAILED:
             raise SSHConnectionError("Connection failed and not recoverable")
 
@@ -370,6 +376,8 @@ class SSHSupervisor:
         Raises:
             SSHError: If execution fails and cannot be retried
         """
+        assert not self._closed,             "exec precondition: supervisor is closed, cannot execute commands"
+
         if self._state == ConnectionState.FAILED:
             raise SSHConnectionError("Connection failed and not recoverable")
 
@@ -389,7 +397,7 @@ class SSHSupervisor:
                 await self._handle_disconnect(reason=DisconnectReason.NETWORK_ERROR)
                 connected = await self.wait_connected(timeout=self._connect_timeout * 2)
                 if connected:
-                    assert self._connection is not None
+                    assert self._connection is not None,                         "exec retry: reconnection reported success but _connection is None"
                     return await self._connection.exec(command)
             raise
 
@@ -458,6 +466,10 @@ class SSHSupervisor:
             await self._transition_to(ConnectionState.CONNECTED)
             self._connected_event.set()
 
+            # Postcondition: connection is fully established
+            assert self._state == ConnectionState.CONNECTED,                 f"_connect postcondition: expected CONNECTED state, got {self._state.value}"
+            assert self._connection is not None,                 "_connect postcondition: _connection must not be None after successful connect"
+
         except AuthenticationError:
             # Auth failures are permanent - don't retry
             await self._transition_to(ConnectionState.FAILED, error="authentication_failed")
@@ -477,8 +489,8 @@ class SSHSupervisor:
         if self._connection is not None:
             try:
                 await self._connection.__aexit__(None, None, None)
-            except Exception:
-                pass  # Ignore errors during disconnect
+            except (OSError, SSHConnectionError) as e:
+                logger.debug("Error during disconnect (ignored): %s", e)
             self._connection = None
 
         if clean:
@@ -506,7 +518,18 @@ class SSHSupervisor:
         )
 
         # Start reconnection in background
-        asyncio.create_task(self._reconnect_loop())
+        task = asyncio.create_task(self._reconnect_loop())
+        task.add_done_callback(self._on_reconnect_task_done)
+
+    def _on_reconnect_task_done(self, task: asyncio.Task[None]) -> None:
+        """Callback for reconnection background task completion."""
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "Reconnection task failed with unhandled exception: %s",
+                exc,
+                exc_info=exc,
+            )
 
     async def _handle_connection_failure(self, error: Exception) -> None:
         """Handle connection failure during connect/reconnect."""
@@ -595,6 +618,16 @@ class SSHSupervisor:
                     attempt=self._current_attempt,
                 )
                 # Loop continues with next attempt
+
+        # Postcondition: loop must exit in a terminal state
+        assert self._state in (
+            ConnectionState.CONNECTED,
+            ConnectionState.FAILED,
+            ConnectionState.DISCONNECTED,
+        ), (
+            f"_reconnect_loop postcondition: expected terminal state, "
+            f"got {self._state.value}"
+        )
 
     # Valid state transitions per the state machine documented in ConnectionState
     _VALID_TRANSITIONS: dict[ConnectionState, set[ConnectionState]] = {

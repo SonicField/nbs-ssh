@@ -137,6 +137,144 @@ class TestErrorTaxonomy:
         assert data["reason"] == "no_auth_sock"
 
 
+
+# ---------------------------------------------------------------------------
+# Adversarial Tests for Error Preconditions/Invariants
+# ---------------------------------------------------------------------------
+
+class TestErrorPreconditions:
+    """Adversarial tests for engineering standards violations in errors.py."""
+
+    # -- Violation 1: SSHError message must be non-empty --
+
+    def test_ssh_error_rejects_empty_message(self) -> None:
+        """SSHError must reject an empty string message."""
+        with pytest.raises(AssertionError, match="non-empty"):
+            SSHError("")
+
+    def test_ssh_error_rejects_whitespace_only_message(self) -> None:
+        """SSHError must reject a whitespace-only message."""
+        with pytest.raises(AssertionError, match="non-empty"):
+            SSHError("   ")
+
+    def test_ssh_error_accepts_valid_message(self) -> None:
+        """SSHError accepts a proper non-empty message."""
+        error = SSHError("Connection failed")
+        assert str(error) == "Connection failed"
+
+    def test_subclass_inherits_message_check(self) -> None:
+        """Subclasses of SSHError also reject empty messages."""
+        with pytest.raises(AssertionError, match="non-empty"):
+            AuthFailed("")
+        with pytest.raises(AssertionError, match="non-empty"):
+            KeyLoadError("")
+        with pytest.raises(AssertionError, match="non-empty"):
+            AgentError("")
+
+    # -- Violation 2: ErrorContext.to_dict key collision --
+
+    def test_error_context_to_dict_rejects_key_collision(self) -> None:
+        """extra keys must not collide with dataclass field names."""
+        ctx = ErrorContext(
+            host="example.com",
+            port=22,
+            extra={"host": "evil.com"},
+        )
+        with pytest.raises(AssertionError, match="collision"):
+            ctx.to_dict()
+
+    def test_error_context_to_dict_rejects_port_collision(self) -> None:
+        """extra key 'port' collides with the dataclass field."""
+        ctx = ErrorContext(
+            port=22,
+            extra={"port": 9999},
+        )
+        with pytest.raises(AssertionError, match="collision"):
+            ctx.to_dict()
+
+    def test_error_context_to_dict_allows_non_colliding_extra(self) -> None:
+        """extra keys that do not collide are fine."""
+        ctx = ErrorContext(
+            host="example.com",
+            extra={"attempts": 3, "latency_ms": 150},
+        )
+        data = ctx.to_dict()
+        assert data["host"] == "example.com"
+        assert data["attempts"] == 3
+        assert data["latency_ms"] == 150
+
+    def test_error_context_to_dict_collision_only_when_field_set(self) -> None:
+        """Collision is checked against field names, not just set values.
+
+        Even if the dataclass field is None (and thus excluded from the
+        output dict), the extra key still collides with a *field name*.
+        This prevents subtle bugs where the collision only appears when
+        the field is later populated.
+        """
+        ctx = ErrorContext(
+            host=None,  # not set, so excluded from result
+            extra={"host": "sneaky.com"},
+        )
+        with pytest.raises(AssertionError, match="collision"):
+            ctx.to_dict()
+
+    # -- Violation 3: KeyLoadError empty key_path --
+
+    def test_key_load_error_rejects_empty_key_path(self) -> None:
+        """KeyLoadError must reject an empty string key_path."""
+        with pytest.raises(AssertionError, match="key_path"):
+            KeyLoadError("Key not found", key_path="")
+
+    def test_key_load_error_rejects_whitespace_key_path(self) -> None:
+        """KeyLoadError must reject a whitespace-only key_path."""
+        with pytest.raises(AssertionError, match="key_path"):
+            KeyLoadError("Key not found", key_path="   ")
+
+    def test_key_load_error_accepts_none_key_path(self) -> None:
+        """KeyLoadError with key_path=None is fine (unknown path)."""
+        error = KeyLoadError("Agent key failed", key_path=None)
+        assert error.context.key_path is None
+
+    def test_key_load_error_accepts_valid_key_path(self) -> None:
+        """KeyLoadError with a real path is fine."""
+        error = KeyLoadError("Key not found", key_path="/home/user/.ssh/id_rsa")
+        assert error.context.key_path == "/home/user/.ssh/id_rsa"
+
+    # -- Violation 4: ErrorContext port range invariant --
+
+    def test_error_context_rejects_port_zero(self) -> None:
+        """Port 0 is not a valid SSH port."""
+        with pytest.raises(AssertionError, match="[Pp]ort"):
+            ErrorContext(host="example.com", port=0)
+
+    def test_error_context_rejects_negative_port(self) -> None:
+        """Negative port is invalid."""
+        with pytest.raises(AssertionError, match="[Pp]ort"):
+            ErrorContext(host="example.com", port=-1)
+
+    def test_error_context_rejects_port_above_65535(self) -> None:
+        """Port above 65535 is invalid."""
+        with pytest.raises(AssertionError, match="[Pp]ort"):
+            ErrorContext(host="example.com", port=65536)
+
+    def test_error_context_accepts_none_port(self) -> None:
+        """Port=None is fine (not yet known)."""
+        ctx = ErrorContext(host="example.com", port=None)
+        assert ctx.port is None
+
+    def test_error_context_accepts_valid_port_boundaries(self) -> None:
+        """Port 1 and port 65535 are both valid."""
+        ctx1 = ErrorContext(port=1)
+        assert ctx1.port == 1
+        ctx2 = ErrorContext(port=65535)
+        assert ctx2.port == 65535
+
+    def test_error_context_accepts_standard_ssh_port(self) -> None:
+        """Port 22 is obviously valid."""
+        ctx = ErrorContext(host="example.com", port=22)
+        assert ctx.port == 22
+
+
 # ---------------------------------------------------------------------------
 # AuthConfig Tests
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ Evidence bundles capture everything needed to understand a connection failure:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -28,6 +29,8 @@ from nbs_ssh.automation import Transcript
 from nbs_ssh.errors import DisconnectReason
 from nbs_ssh.events import Event
 
+
+log = logging.getLogger(__name__)
 
 # Patterns for secret redaction
 SECRET_PATTERNS = [
@@ -168,7 +171,7 @@ class AlgorithmInfo:
 
             return info
         except Exception:
-            # If extraction fails, return empty info
+            log.debug("Failed to extract algorithm info from AsyncSSH connection", exc_info=True)
             return cls()
 
 
@@ -190,6 +193,10 @@ class TimingInfo:
     def connect_duration_ms(self) -> float | None:
         """Calculate connection duration in milliseconds."""
         if self.connect_start_ms and self.connect_end_ms:
+            assert self.connect_end_ms >= self.connect_start_ms, (
+                f"connect_end_ms ({self.connect_end_ms}) < connect_start_ms ({self.connect_start_ms}): "
+                f"timestamps are out of order, check clock source"
+            )
             return self.connect_end_ms - self.connect_start_ms
         return None
 
@@ -197,6 +204,10 @@ class TimingInfo:
     def auth_duration_ms(self) -> float | None:
         """Calculate authentication duration in milliseconds."""
         if self.auth_start_ms and self.auth_end_ms:
+            assert self.auth_end_ms >= self.auth_start_ms, (
+                f"auth_end_ms ({self.auth_end_ms}) < auth_start_ms ({self.auth_start_ms}): "
+                f"timestamps are out of order, check clock source"
+            )
             return self.auth_end_ms - self.auth_start_ms
         return None
 
@@ -204,6 +215,10 @@ class TimingInfo:
     def total_duration_ms(self) -> float | None:
         """Calculate total session duration from connect to disconnect."""
         if self.connect_start_ms and self.disconnect_ms:
+            assert self.disconnect_ms >= self.connect_start_ms, (
+                f"disconnect_ms ({self.disconnect_ms}) < connect_start_ms ({self.connect_start_ms}): "
+                f"timestamps are out of order, check clock source"
+            )
             return self.disconnect_ms - self.connect_start_ms
         return None
 
@@ -399,6 +414,9 @@ class EvidenceBundle:
             format: Output format - 'json' or 'jsonl'
             redact: If True, redact secrets from output
         """
+        assert format in ("json", "jsonl"), (
+            f"Unsupported format {format!r}: expected 'json' or 'jsonl'"
+        )
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -424,7 +442,8 @@ class EvidenceBundle:
             Reconstructed EvidenceBundle
         """
         path = Path(path)
-        assert path.exists(), f"Bundle file not found: {path}"
+        if not path.exists():
+            raise FileNotFoundError(f"Bundle file not found: {path}")
 
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -473,6 +492,7 @@ class EvidenceBundle:
         try:
             bundle.disconnect_reason = DisconnectReason(reason_str)
         except ValueError:
+            log.warning("Unrecognised disconnect reason %r, defaulting to NORMAL", reason_str)
             bundle.disconnect_reason = DisconnectReason.NORMAL
 
         # Timing
@@ -534,6 +554,7 @@ class EvidenceBundle:
                 try:
                     bundle.disconnect_reason = DisconnectReason(reason_str)
                 except ValueError:
+                    log.warning("Unrecognised disconnect reason %r, defaulting to NORMAL", reason_str)
                     bundle.disconnect_reason = DisconnectReason.NORMAL
 
                 if "timing" in data:

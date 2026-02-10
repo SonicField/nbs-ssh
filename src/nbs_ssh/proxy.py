@@ -21,9 +21,12 @@ Examples:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import socket
 from typing import Any
+
+log = logging.getLogger("nbs_ssh.proxy")
 
 
 class ProxyCommandError(Exception):
@@ -80,6 +83,12 @@ class ProxyCommandProcess:
 
     async def start(self) -> None:
         """Start the ProxyCommand subprocess."""
+        # Precondition: not already closed
+        assert not self._closed, (
+            f"Cannot start ProxyCommand after close() has been called. "
+            f"Command: {self._command}"
+        )
+
         if self._process is not None:
             raise RuntimeError("ProxyCommand already started")
 
@@ -125,8 +134,9 @@ class ProxyCommandProcess:
                     stderr = (await self._process.stderr.read()).decode(
                         "utf-8", errors="replace"
                     )
-                except Exception:
-                    pass
+                except OSError as e:
+                    stderr = f"<stderr read failed: {e}>"
+                    log.debug("Failed to read stderr from ProxyCommand: %s", e)
             self._cleanup_sockets()
             raise ProxyCommandError(
                 f"ProxyCommand exited immediately with code {self._process.returncode}",
@@ -138,14 +148,37 @@ class ProxyCommandProcess:
         # Start the bridge task to forward data between socket and subprocess
         self._bridge_task = asyncio.create_task(self._bridge())
 
+        # Postconditions: all state must be initialised after successful start
+        assert self._process is not None, (
+            "Postcondition violated: _process is not None after start()"
+        )
+        assert self._local_sock is not None, (
+            "Postcondition violated: _local_sock is not None after start()"
+        )
+        assert self._remote_sock is not None, (
+            "Postcondition violated: _remote_sock is not None after start()"
+        )
+        assert self._bridge_task is not None, (
+            "Postcondition violated: _bridge_task is not None after start()"
+        )
+
     async def _bridge(self) -> None:
         """Bridge data between the socket pair and subprocess stdin/stdout."""
-        if self._process is None or self._local_sock is None:
-            return
+        # Precondition: process and socket must exist when bridge is called
+        assert self._process is not None, (
+            "_bridge called but _process is None — bridge requires a running process"
+        )
+        assert self._local_sock is not None, (
+            "_bridge called but _local_sock is None — bridge requires a connected socket"
+        )
 
         loop = asyncio.get_event_loop()
-        assert self._process.stdin is not None
-        assert self._process.stdout is not None
+        assert self._process.stdin is not None, (
+            "Process stdin is None — subprocess was not created with stdin=PIPE"
+        )
+        assert self._process.stdout is not None, (
+            "Process stdout is None — subprocess was not created with stdout=PIPE"
+        )
 
         async def socket_to_subprocess() -> None:
             """Forward data from socket to subprocess stdin."""
@@ -165,8 +198,8 @@ class ProxyCommandProcess:
             # Close subprocess stdin when socket closes
             try:
                 self._process.stdin.close()
-            except Exception:
-                pass
+            except OSError as e:
+                log.debug("Error closing subprocess stdin: %s", e)
 
         async def subprocess_to_socket() -> None:
             """Forward data from subprocess stdout to socket."""
@@ -196,8 +229,8 @@ class ProxyCommandProcess:
                 subprocess_to_socket(),
                 monitor_process(),
             )
-        except Exception:
-            pass  # Cleanup will happen in close()
+        except (OSError, ConnectionError, asyncio.CancelledError) as e:
+            log.debug("Bridge terminated: %s", e)
 
     def get_socket(self) -> socket.socket:
         """
@@ -215,15 +248,15 @@ class ProxyCommandProcess:
         if self._local_sock is not None:
             try:
                 self._local_sock.close()
-            except Exception:
-                pass
+            except OSError as e:
+                log.debug("Error closing local socket: %s", e)
             self._local_sock = None
 
         if self._remote_sock is not None:
             try:
                 self._remote_sock.close()
-            except Exception:
-                pass
+            except OSError as e:
+                log.debug("Error closing remote socket: %s", e)
             self._remote_sock = None
 
     async def close(self) -> None:
@@ -253,8 +286,8 @@ class ProxyCommandProcess:
                     # Force kill if it doesn't respond
                     self._process.kill()
                     await self._process.wait()
-            except Exception:
-                pass
+            except (OSError, ProcessLookupError) as e:
+                log.debug("Error terminating ProxyCommand process: %s", e)
             self._process = None
 
         # Clean up sockets
