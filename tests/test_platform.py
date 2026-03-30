@@ -714,12 +714,3 @@ class TestAuthIntegration:
         assert "~" not in str(config.key_path)
         assert isinstance(config.key_path, Path)
 
-    def test_check_agent_available_uses_platform(self) -> None:
-        """check_agent_available delegates to platform module."""
-        from nbs_ssh import auth
-
-        # Patch at the location where it's used, not where it's defined
-        with patch.object(auth, "get_agent_available", return_value=True) as mock:
-            result = auth.check_agent_available()
-            assert result is True
-            mock.assert_called_once()

@@ -548,7 +548,7 @@ Host myalias
 
         # Mock to avoid actual connection attempt and auth discovery
         with patch("nbs_ssh.connection.check_gssapi_available", return_value=False):
-            with patch("nbs_ssh.connection.check_agent_available", return_value=True):
+            with patch("nbs_ssh.connection.get_agent_available", return_value=True):
                 from nbs_ssh.connection import SSHConnection
                 from nbs_ssh.auth import create_agent_auth
                 conn = SSHConnection(
@@ -577,7 +577,7 @@ Host myalias
         ssh_config = SSHConfig(config_files=[config_file])
 
         with patch("nbs_ssh.connection.check_gssapi_available", return_value=False):
-            with patch("nbs_ssh.connection.check_agent_available", return_value=True):
+            with patch("nbs_ssh.connection.get_agent_available", return_value=True):
                 from nbs_ssh.connection import SSHConnection
                 from nbs_ssh.auth import create_agent_auth
                 conn = SSHConnection(
@@ -605,7 +605,7 @@ Host myalias
 
         with patch("nbs_ssh.config.get_config_path", return_value=config_file):
             with patch("nbs_ssh.connection.check_gssapi_available", return_value=False):
-                with patch("nbs_ssh.connection.check_agent_available", return_value=True):
+                with patch("nbs_ssh.connection.get_agent_available", return_value=True):
                     from nbs_ssh.connection import SSHConnection
                     from nbs_ssh.auth import create_agent_auth
                     conn = SSHConnection(

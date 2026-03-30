@@ -24,7 +24,6 @@ import pytest
 from nbs_ssh.auth import (
     AuthConfig,
     AuthMethod,
-    check_agent_available,
     check_security_key_available,
     create_agent_auth,
     create_key_auth,
@@ -434,35 +433,6 @@ class TestKeyLoading:
 
 
 # ---------------------------------------------------------------------------
-# Agent Detection Tests
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(sys.platform == "win32", reason="SSH agent uses Unix sockets (SSH_AUTH_SOCK)")
-class TestAgentDetection:
-    """Test SSH agent availability checking."""
-
-    def test_check_agent_no_socket_env(self) -> None:
-        """check_agent_available returns False when SSH_AUTH_SOCK not set."""
-        with patch.dict(os.environ, {}, clear=True):
-            # Remove SSH_AUTH_SOCK if present
-            os.environ.pop("SSH_AUTH_SOCK", None)
-            assert check_agent_available() is False
-
-    def test_check_agent_socket_exists(self, tmp_path: Path) -> None:
-        """check_agent_available returns True when socket exists."""
-        fake_socket = tmp_path / "agent.sock"
-        fake_socket.touch()
-
-        with patch.dict(os.environ, {"SSH_AUTH_SOCK": str(fake_socket)}):
-            assert check_agent_available() is True
-
-    def test_check_agent_socket_missing(self) -> None:
-        """check_agent_available returns False when socket file missing."""
-        with patch.dict(os.environ, {"SSH_AUTH_SOCK": "/nonexistent/socket"}):
-            assert check_agent_available() is False
-
-
-# ---------------------------------------------------------------------------
 # GSSAPI Detection Tests
 # ---------------------------------------------------------------------------
 
@@ -723,7 +693,7 @@ class TestAuthAutoDiscovery:
             with patch("nbs_ssh.connection.get_default_key_paths") as mock_paths:
                 mock_paths.return_value = []
 
-                with patch("nbs_ssh.connection.check_agent_available") as mock_agent:
+                with patch("nbs_ssh.connection.get_agent_available") as mock_agent:
                     mock_agent.return_value = False
 
                     with pytest.raises(AuthFailed) as exc_info:
@@ -792,7 +762,7 @@ async def test_auto_discovery_integration_with_mock_server() -> None:
             mock_paths.return_value = [key_path]
 
             # Mock agent as unavailable
-            with patch("nbs_ssh.connection.check_agent_available") as mock_agent:
+            with patch("nbs_ssh.connection.get_agent_available") as mock_agent:
                 mock_agent.return_value = False
 
                 # Create mock server with key auth

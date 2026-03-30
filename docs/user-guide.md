@@ -100,7 +100,7 @@ from nbs_ssh import (
     create_password_auth,
     create_key_auth,
     create_agent_auth,
-    check_agent_available,
+    get_agent_available,
 )
 
 # Password
@@ -110,7 +110,7 @@ auth = create_password_auth("my-password")
 auth = create_key_auth("~/.ssh/id_rsa", passphrase="secret")
 
 # SSH agent
-if check_agent_available():
+if get_agent_available():
     auth = create_agent_auth()
 ```
 
@@ -686,11 +686,10 @@ defaults = get_default_key_paths()
 ### SSH Agent Detection
 
 ```python
-from nbs_ssh import check_agent_available, get_agent_keys
+from nbs_ssh import get_agent_available
 
-if check_agent_available():
-    keys = await get_agent_keys()
-    print(f"Agent has {len(keys)} keys")
+if get_agent_available():
+    print("SSH agent is available")
 ```
 
 ### Path Utilities

@@ -18,7 +18,7 @@ from typing import Any, Callable, Sequence
 import asyncssh
 
 from nbs_ssh.errors import AgentError, CertificateError, ErrorContext, KeyLoadError
-from nbs_ssh.platform import expand_path, get_agent_available, get_openssh_agent_available
+from nbs_ssh.platform import expand_path, get_openssh_agent_available
 from nbs_ssh.secure_string import SecureString
 
 logger = logging.getLogger(__name__)
@@ -333,19 +333,6 @@ def load_certificate(
             cert_path=str(cert_path),
             reason="unknown",
         ) from e
-
-
-def check_agent_available() -> bool:
-    """
-    Check if SSH agent is available.
-
-    On Unix: checks SSH_AUTH_SOCK environment variable
-    On Windows: checks for Pageant and OpenSSH Authentication Agent service
-
-    Returns:
-        True if any SSH agent is available
-    """
-    return get_agent_available()
 
 
 async def get_agent_keys() -> list[asyncssh.SSHKey]:

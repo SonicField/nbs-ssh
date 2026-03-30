@@ -268,11 +268,8 @@ def create_key_auth(
 def create_agent_auth() -> AuthConfig
     """Create SSH agent authentication config."""
 
-def check_agent_available() -> bool
+def get_agent_available() -> bool
     """Check if SSH agent is available."""
-
-async def get_agent_keys() -> list[asyncssh.SSHKey]
-    """Get keys from SSH agent."""
 ```
 
 **Example:**
@@ -282,7 +279,7 @@ from nbs_ssh import (
     create_password_auth,
     create_key_auth,
     create_agent_auth,
-    check_agent_available,
+    get_agent_available,
 )
 
 # Password
@@ -292,7 +289,7 @@ auth = create_password_auth("secret")
 auth = create_key_auth("~/.ssh/id_rsa", passphrase="key-secret")
 
 # Agent (check availability first)
-if check_agent_available():
+if get_agent_available():
     auth = create_agent_auth()
 
 # Multiple methods (fallback chain)
@@ -1036,8 +1033,7 @@ from nbs_ssh import (
     create_password_auth,
     create_key_auth,
     create_agent_auth,
-    check_agent_available,
-    get_agent_keys,
+    get_agent_available,
 
     # Results
     ExecResult,

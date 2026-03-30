@@ -435,9 +435,9 @@ nmap --script ssh2-enum-algos example.com
 
 **Diagnosis**:
 ```python
-from nbs_ssh import check_agent_available
+from nbs_ssh import get_agent_available
 
-if not check_agent_available():
+if not get_agent_available():
     print("SSH agent not available")
 ```
 

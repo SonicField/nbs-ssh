@@ -32,7 +32,6 @@ import asyncssh
 from nbs_ssh.auth import (
     AuthConfig,
     AuthMethod,
-    check_agent_available,
     check_gssapi_available,
     check_pkcs11_available,
     create_agent_auth,
@@ -73,7 +72,7 @@ from nbs_ssh.host_key import (
     HostKeyVerifier,
     get_key_fingerprint,
 )
-from nbs_ssh.platform import get_default_key_paths, get_known_hosts_read_paths, get_known_hosts_write_path
+from nbs_ssh.platform import get_agent_available, get_default_key_paths, get_known_hosts_read_paths, get_known_hosts_write_path
 from nbs_ssh.events import EventCollector, EventEmitter, EventType
 from nbs_ssh.evidence import AlgorithmInfo, EvidenceBundle, HostInfo, TimingInfo
 from nbs_ssh.config import SSHConfig, SSHHostConfig
@@ -527,7 +526,7 @@ class SSHConnection:
             configs.append(create_gssapi_auth())
 
         # SSH agent (if available)
-        if check_agent_available():
+        if get_agent_available():
             configs.append(create_agent_auth())
 
         # Default keys from SSH config and standard locations
