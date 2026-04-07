@@ -397,9 +397,9 @@ class SSHConnection:
             if port is None:
                 port = self._host_config.port
 
-            # Username from config if not specified
+            # Username from config if not specified (falls back to OS user)
             if username is None:
-                username = self._host_config.user
+                username = self._host_config.get_user()
 
             # ConnectTimeout from config if not specified
             if connect_timeout is None and self._host_config.connect_timeout is not None:
