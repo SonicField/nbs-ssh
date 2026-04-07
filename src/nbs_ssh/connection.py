@@ -540,15 +540,21 @@ class SSHConnection:
         if check_gssapi_available():
             configs.append(create_gssapi_auth())
 
-        # SSH agent (if available)
-        if get_agent_available():
+        # Check IdentitiesOnly from SSH config (matches CLI behaviour)
+        identities_only = (
+            self._host_config.identities_only if self._host_config else False
+        )
+
+        # SSH agent (if available and not restricted by IdentitiesOnly)
+        if get_agent_available() and not identities_only:
             configs.append(create_agent_auth())
 
         # Default keys from SSH config and standard locations
-        for key_path in get_default_key_paths():
-            # Check both existence and readability
-            if key_path.exists() and os.access(key_path, os.R_OK):
-                configs.append(create_key_auth(key_path))
+        if not identities_only:
+            for key_path in get_default_key_paths():
+                # Check both existence and readability
+                if key_path.exists() and os.access(key_path, os.R_OK):
+                    configs.append(create_key_auth(key_path))
 
         # Keyboard-interactive auth when an interaction handler is provided.
         # This enables 2FA/Duo prompts through the handler's on_kbdint method.
