@@ -60,10 +60,8 @@ class TestBuildAuthWithHandler:
     """When interaction_handler is set, auto-discovery should include kbdint."""
 
     def test_auto_discovery_includes_kbdint_with_handler(self):
-        """When handler has on_kbdint, auto-discovery adds kbdint to the chain."""
+        """When handler is set, auto-discovery adds kbdint to the chain."""
         handler = SSHInteractionHandler()
-        # Override on_kbdint so it's not just the default
-        handler.on_kbdint = lambda name, instr, prompts: ["response"]
 
         conn = SSHConnection(
             host="example.com",
@@ -120,11 +118,7 @@ class TestKbdintCallbackPropagation:
 
     def test_handler_kbdint_callback_in_auth_config(self):
         """The kbdint AuthConfig created by the handler has the callback attached."""
-        def my_callback(name, instructions, prompts):
-            return ["duo_response"]
-
         handler = SSHInteractionHandler()
-        handler.on_kbdint = my_callback
 
         conn = SSHConnection(
             host="example.com",
@@ -134,4 +128,5 @@ class TestKbdintCallbackPropagation:
 
         kbdint_configs = [c for c in configs if c.method == AuthMethod.KEYBOARD_INTERACTIVE]
         assert len(kbdint_configs) == 1
-        assert kbdint_configs[0].kbdint_response_callback is my_callback
+        # The callback should be the handler's on_kbdint method
+        assert kbdint_configs[0].kbdint_response_callback is handler.on_kbdint

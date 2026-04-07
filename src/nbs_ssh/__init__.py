@@ -67,6 +67,7 @@ from nbs_ssh.host_key import (
     get_key_fingerprint,
 )
 from nbs_ssh.events import Event, EventCollector, EventEmitter, EventType
+from nbs_ssh.interaction import SSHInteractionHandler
 from nbs_ssh.evidence import (
     AlgorithmInfo,
     EvidenceBundle,
@@ -198,6 +199,8 @@ __all__ = [
     "ConnectionState",
     "RetryPolicy",
     "SSHSupervisor",
+    # Interaction
+    "SSHInteractionHandler",
     # Events
     "Event",
     "EventCollector",

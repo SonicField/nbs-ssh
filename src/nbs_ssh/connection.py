@@ -334,6 +334,7 @@ class SSHConnection:
         x11_forwarding: bool = False,
         compression: bool = False,
         hash_known_hosts: bool = False,
+        interaction_handler=None,
     ) -> None:
         """
         Initialise SSH connection parameters.
@@ -459,6 +460,20 @@ class SSHConnection:
         # Only used if proxy_command is not set
         self._proxy_jump = None if proxy_command else self._normalise_proxy_jump(proxy_jump)
 
+        # Store interaction handler for auth callbacks
+        self._interaction_handler = interaction_handler
+
+        # If handler provides host key callback and none was explicitly set,
+        # wire it up automatically
+        if interaction_handler is not None and on_unknown_host_key is None:
+            def _handler_host_key_callback(host, port, key):
+                from nbs_ssh.host_key import get_key_fingerprint
+                key_type = key.get_algorithm()
+                fingerprint = get_key_fingerprint(key)
+                key_info = f"{key_type} {fingerprint}"
+                return interaction_handler.on_host_key(host, port, key_info)
+            self._on_unknown_host_key = _handler_host_key_callback
+
         # Build auth configs from either new or legacy interface
         self._auth_configs = self._build_auth_configs(auth, password, client_keys)
 
@@ -534,6 +549,13 @@ class SSHConnection:
             # Check both existence and readability
             if key_path.exists() and os.access(key_path, os.R_OK):
                 configs.append(create_key_auth(key_path))
+
+        # Keyboard-interactive auth when an interaction handler is provided.
+        # This enables 2FA/Duo prompts through the handler's on_kbdint method.
+        if self._interaction_handler is not None:
+            configs.append(create_keyboard_interactive_auth(
+                response_callback=self._interaction_handler.on_kbdint,
+            ))
 
         return configs
 
